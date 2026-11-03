@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Drive Workspaces</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body class="popup">
+  <header>
+    <h1>ワークスペース</h1>
+    <button id="sync" title="今すぐ同期">同期</button>
+  </header>
+  <div id="notice"></div>
+  <div class="list" id="list"></div>
+  <div class="footer">
+    <div id="current" class="muted"></div>
+    <div class="row" id="createRow">
+      <input type="text" id="newName" placeholder="このウィンドウをワークスペースとして保存…" />
+      <button class="primary" id="create">保存</button>
+    </div>
+    <div class="muted" id="status"></div>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

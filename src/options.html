@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Drive Workspaces 設定</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body>
+  <main class="options">
+    <h1>Drive Workspaces 設定</h1>
+
+    <section>
+      <h2>1. OAuth クライアント</h2>
+      <p class="muted">Google Cloud で作成した「ウェブアプリケーション」型 OAuth クライアントの情報を入力します。承認済みのリダイレクトURIには次を登録してください：</p>
+      <p><code id="redirect"></code></p>
+      <label for="clientId">クライアントID</label>
+      <input type="text" id="clientId" autocomplete="off" />
+      <label for="clientSecret">クライアントシークレット</label>
+      <input type="password" id="clientSecret" autocomplete="off" />
+      <label for="deviceName">この端末の名前（一覧に表示）</label>
+      <input type="text" id="deviceName" placeholder="例: 自宅PC Chrome" />
+      <div class="row"><button class="primary" id="save">保存</button> <span id="saved" class="muted"></span></div>
+    </section>
+
+    <section>
+      <h2>2. Google アカウント</h2>
+      <p id="authState" class="muted"></p>
+      <div class="row">
+        <button class="primary" id="signin">サインイン</button>
+        <button id="signout">サインアウト</button>
+      </div>
+      <p id="authError" class="error"></p>
+    </section>
+
+    <section>
+      <h2>情報</h2>
+      <p class="muted">拡張ID: <code id="extId"></code></p>
+      <p class="muted">データは Google Drive の appDataFolder（Drive の画面には表示されない、この拡張専用の隠しフォルダ）に保存されます。</p>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
