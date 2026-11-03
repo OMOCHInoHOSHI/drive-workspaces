@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Drive Workspaces",
+  "version": "0.1.0",
+  "description": "ウィンドウ単位のワークスペースを Google Drive 経由でデバイス間同期します（自分用）",
+  "minimum_chrome_version": "120",
+  "permissions": ["tabs", "tabGroups", "storage", "alarms", "identity"],
+  "host_permissions": [
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Drive Workspaces",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}
