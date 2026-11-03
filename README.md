@@ -3,7 +3,7 @@
 Edge のワークスペースのように「ウィンドウ単位のタブ状態」を、Google Drive 経由で
 デバイス間・ブラウザ間（Chrome / Edge などの Chromium 系）で同期する、自分用の拡張機能です。
 
-- 保存先: Google Drive の **appDataFolder**（Drive の画面に出ない拡張専用の隠しフォルダ）
+- 保存先: 拡張機能でサインインしたGoogleアカウントのGoogle Drive の **appDataFolder**（Drive の画面に出ない拡張専用の隠しフォルダ）
 - スコープ: `drive.appdata` のみ（Google の区分で「非機密」）
 - 費用: 無料（Google Cloud プロジェクト・Drive API とも無料枠内）
 
@@ -63,6 +63,35 @@ npm run build    # dist/ が生成される
 4. 拡張の「オプション」を開き、クライアントID・シークレット・端末名を入力 → **サインイン**
 
 別の端末では `dist/` をコピーして同じ手順5を行います（鍵が同じなので拡張IDも同じになります）。
+
+
+### 2台目以降のPCですること
+
+```
+git clone git@github.com:OMOCHInoHOSHI/drive-workspaces.git
+```
+```
+cd drive-workspaces
+```
+```
+npm install
+```
+```
+npm run build      # keygen はしない（extension-key.json を使い回す）
+```
+
+### コードを変えたとき(PCごとに行う)
+
+```
+npm run build
+```
+
+その後、
+####
+
+拡張機能ページで「Drive Workspaces」の更新ボタン（↻）を押す
+
+
 
 ## 使い方
 
