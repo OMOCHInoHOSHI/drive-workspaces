@@ -155,8 +155,13 @@ async function fullSync(): Promise<void> {
   for (const f of files) {
     const cached = Object.values(all).find((w) => w.fileId === f.id);
     if (cached && cached.modifiedTime === f.modifiedTime) continue;
-    const doc = await drive.download(f.id);
-    await applyRemote(doc, f);
+    try {
+      const doc = await drive.download(f.id);
+      await applyRemote(doc, f);
+    } catch (e) {
+      // 形式不正・一時的な取得失敗のファイルは無視して続行（全体の同期を止めない）
+      console.warn("[sync] skip file:", f.name, e);
+    }
   }
   for (const w of Object.values(all)) {
     if (w.fileId && !seen.has(w.fileId)) await handleRemoteDelete(w.fileId);
@@ -184,8 +189,12 @@ export async function pull(): Promise<void> {
     if (!c.file || !drive.isWorkspaceFile(c.file.name)) continue;
     const cached = Object.values(await getWorkspaces()).find((w) => w.fileId === c.fileId);
     if (cached && cached.modifiedTime === c.file.modifiedTime) continue; // 自分の書き込み
-    const doc = await drive.download(c.fileId);
-    await applyRemote(doc, c.file);
+    try {
+      const doc = await drive.download(c.fileId);
+      await applyRemote(doc, c.file);
+    } catch (e) {
+      console.warn("[sync] skip change:", c.file.name, e);
+    }
   }
   await setLocal("pageToken", result.newToken);
 }

@@ -1,5 +1,5 @@
 import { getAccessToken } from "./auth.js";
-import type { WorkspaceDoc } from "./types.js";
+import type { GroupState, TabState, WorkspaceDoc } from "./types.js";
 
 /**
  * Google Drive API v3（appDataFolder のみ使用。スコープ drive.appdata）。
@@ -15,6 +15,37 @@ export interface DriveFile {
   id: string;
   name: string;
   modifiedTime: string;
+}
+
+/** Drive から取得した JSON は外部データなので、使う前に最低限の構造を検証する */
+export function isWorkspaceDoc(v: unknown): v is WorkspaceDoc {
+  if (typeof v !== "object" || v === null) return false;
+  const d = v as Record<string, unknown>;
+  return (
+    d.schema === 1 &&
+    typeof d.id === "string" &&
+    typeof d.name === "string" &&
+    Array.isArray(d.tabs) &&
+    d.tabs.every(
+      (t) =>
+        typeof t === "object" &&
+        t !== null &&
+        typeof (t as TabState).url === "string" &&
+        typeof (t as TabState).title === "string" &&
+        typeof (t as TabState).pinned === "boolean" &&
+        typeof (t as TabState).active === "boolean" &&
+        ((t as TabState).group === null || typeof (t as TabState).group === "number"),
+    ) &&
+    Array.isArray(d.groups) &&
+    d.groups.every(
+      (g) =>
+        typeof g === "object" &&
+        g !== null &&
+        typeof (g as GroupState).key === "number" &&
+        typeof (g as GroupState).title === "string" &&
+        typeof (g as GroupState).collapsed === "boolean",
+    )
+  );
 }
 
 export function fileNameFor(wsId: string): string {
@@ -56,7 +87,11 @@ export async function listFiles(): Promise<DriveFile[]> {
 
 export async function download(fileId: string): Promise<WorkspaceDoc> {
   const res = await request(`${API}/files/${encodeURIComponent(fileId)}?alt=media`);
-  return (await res.json()) as WorkspaceDoc;
+  const json: unknown = await res.json();
+  if (!isWorkspaceDoc(json)) {
+    throw new Error(`ワークスペースデータの形式が不正です（file ${fileId}）。このファイルは無視されます`);
+  }
+  return json;
 }
 
 export async function create(doc: WorkspaceDoc): Promise<DriveFile> {
