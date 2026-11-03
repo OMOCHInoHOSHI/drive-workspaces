@@ -60,14 +60,18 @@ export async function whoAmI(): Promise<Pick<WorkspaceDoc, "updatedBy" | "device
   };
 }
 
-async function applyGuarded(windowId: number, doc: Pick<WorkspaceDoc, "tabs" | "groups">, activate: boolean) {
+async function withApplyGuard<T>(windowId: number, fn: () => Promise<T>): Promise<T> {
   applying.add(windowId);
   try {
-    await applyToWindow(windowId, doc, activate);
+    return await fn();
   } finally {
     // 適用で発生したタブイベントが届き切るのを少し待ってから解除
     setTimeout(() => applying.delete(windowId), 1500);
   }
+}
+
+function applyGuarded(windowId: number, doc: Pick<WorkspaceDoc, "tabs" | "groups">, activate: boolean): Promise<void> {
+  return withApplyGuard(windowId, () => applyToWindow(windowId, doc, activate));
 }
 
 // ---- ローカル → Drive ----
@@ -250,9 +254,13 @@ export async function openWorkspace(wsId: string): Promise<void> {
   }
   const urls = cached.doc.tabs.map((t) => t.url).filter(isSyncable);
   const win = await chrome.windows.create(urls.length ? { url: urls, focused: true } : { focused: true });
-  if (win?.id === undefined) throw new Error("ウィンドウを作成できませんでした");
-  await mapWindow(win.id, wsId);
-  await applyGuarded(win.id, cached.doc, true);
+  const winId = win?.id;
+  if (winId === undefined) throw new Error("ウィンドウを作成できませんでした");
+  // 適用が終わるまで（＋関連付けの間）のタブイベントを無視するため、ガードを先に立てる
+  await withApplyGuard(winId, async () => {
+    await mapWindow(winId, wsId);
+    await applyToWindow(winId, cached.doc, true);
+  });
   await touch(wsId);
 }
 
