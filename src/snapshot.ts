@@ -1,3 +1,4 @@
+import { aliasedUrl, type TabAlias } from "./alias.js";
 import type { GroupState, TabState, WorkspaceDoc } from "./types.js";
 
 /**
@@ -27,7 +28,8 @@ async function sortedTabs(windowId: number): Promise<chrome.tabs.Tab[]> {
   return tabs.sort((a, b) => a.index - b.index);
 }
 
-export async function capture(windowId: number): Promise<Snapshot> {
+/** aliases: 反映で作ったタブの別名。別名があるタブは実際の URL の代わりに要求した URL を記録する */
+export async function capture(windowId: number, aliases: Record<string, TabAlias> = {}): Promise<Snapshot> {
   const [tabs, groupList] = await Promise.all([sortedTabs(windowId), chrome.tabGroups.query({ windowId })]);
   const groupInfo = new Map(groupList.map((g) => [g.id, g]));
   const keyOf = new Map<number, number>();
@@ -35,7 +37,7 @@ export async function capture(windowId: number): Promise<Snapshot> {
   const out: TabState[] = [];
 
   for (const t of tabs) {
-    const url = urlOf(t);
+    const url = aliasedUrl(t.id, urlOf(t), aliases);
     if (!isSyncable(url)) continue;
     let group: number | null = null;
     if (t.groupId !== NONE && !t.pinned) {
@@ -79,10 +81,19 @@ export function hashOf(s: Pick<WorkspaceDoc, "tabs" | "groups">): string {
  * 保存状態をウィンドウに差分適用する。
  * 全部閉じて開き直すと作業中のタブ（入力中のフォーム等）が消えるため、URLが一致するタブは再利用する。
  */
-export async function applyToWindow(windowId: number, doc: Pick<WorkspaceDoc, "tabs" | "groups">, activate: boolean): Promise<void> {
+export async function applyToWindow(
+  windowId: number,
+  doc: Pick<WorkspaceDoc, "tabs" | "groups">,
+  activate: boolean,
+  aliases: Record<string, TabAlias> = {},
+  /** タブを作るたびに、すぐ呼ぶ（途中で失敗しても、作ったタブには別名が付くように） */
+  onCreated?: (tabId: number, url: string, actual: string, loaded: boolean) => Promise<void>,
+): Promise<void> {
   const desired = doc.tabs.filter((t) => isSyncable(t.url));
   const current = await sortedTabs(windowId);
-  const pool = current.filter((t) => t.id !== undefined && isSyncable(urlOf(t)));
+  // 照合も別名で行う（リダイレクトされたタブを「URL 不一致」として作り直さないため）
+  const keyOf = (t: chrome.tabs.Tab) => aliasedUrl(t.id, urlOf(t), aliases);
+  const pool = current.filter((t) => t.id !== undefined && isSyncable(keyOf(t)));
 
   // 1. URL一致で既存タブを割り当て、足りない分は作成
   // 同一 URL が複数あるときはピン留め状態も一致しているタブを優先する
@@ -90,7 +101,7 @@ export async function applyToWindow(windowId: number, doc: Pick<WorkspaceDoc, "t
   const used = new Set<number>();
   const ids: number[] = [];
   for (const d of desired) {
-    const urlMatch = (t: chrome.tabs.Tab) => !used.has(t.id!) && urlOf(t) === d.url;
+    const urlMatch = (t: chrome.tabs.Tab) => !used.has(t.id!) && keyOf(t) === d.url;
     const m = pool.find((t) => urlMatch(t) && !!t.pinned === d.pinned) ?? pool.find(urlMatch);
     if (m) {
       used.add(m.id!);
@@ -99,6 +110,7 @@ export async function applyToWindow(windowId: number, doc: Pick<WorkspaceDoc, "t
       const t = await chrome.tabs.create({ windowId, url: d.url, active: false, pinned: d.pinned });
       used.add(t.id!);
       ids.push(t.id!);
+      await onCreated?.(t.id!, d.url, urlOf(t), t.status === "complete");
     }
   }
 

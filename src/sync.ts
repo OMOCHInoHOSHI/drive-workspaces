@@ -1,19 +1,25 @@
 import { detectBrowser } from "./browser.js";
 import * as drive from "./drive.js";
+import { newAlias, restoreAliases, staleUrlMap } from "./alias.js";
 import { needsUpload, type OutboxEntry, shouldEnqueue } from "./outbox.js";
 import { applyToWindow, capture, hashOf, isSyncable, similarity, urlOf } from "./snapshot.js";
 import {
+  commitRestoredAliases,
   deleteWorkspaceCache,
+  getAliases,
   getDeviceId,
   getLocal,
   getOutbox,
   getOutboxEntry,
+  getStaleAliases,
   getWindowMap,
   getWorkspaces,
   mapWindow,
+  putAlias,
   putOutbox,
   putWorkspace,
   removeOutbox,
+  removeAliasesOfWorkspace,
   removeOutboxIf,
   setLocal,
   unmapWindow,
@@ -141,6 +147,11 @@ async function withApplyGuardWhenIdle(windowId: number, fn: () => Promise<boolea
   return withApplyGuard(windowId, fn);
 }
 
+/** 反映で作ったタブに、要求した URL を別名として付ける関数（applyToWindow の onCreated に渡す） */
+function aliasRecorder(wsId: string): (tabId: number, url: string, actual: string, loaded: boolean) => Promise<void> {
+  return (tabId, url, actual, loaded) => putAlias(tabId, newAlias(wsId, url, actual, Date.now(), loaded));
+}
+
 // ---- ローカル → Drive ----
 
 /** 閉じ始めたウィンドウ。撮影中に閉じ始めたら、途中までタブが消えた状態かもしれないので捨てる */
@@ -196,7 +207,7 @@ async function snapshotNow(windowId: number, wsId: string): Promise<void> {
     await unmapWindow(windowId); // onRemoved を取りこぼした古い対応を外す
     return;
   }
-  const snap = await capture(windowId);
+  const snap = await capture(windowId, await getAliases());
   if (shouldDiscard(windowId, wsId)) return;
   if ((await getWindowMap())[String(windowId)] !== wsId) return; // 撮影中に関連付けが外れた
   const h = hashOf(snap);
@@ -276,8 +287,9 @@ async function applyRemote(doc: WorkspaceDoc, file: drive.DriveFile): Promise<vo
   await withApplyGuardWhenIdle(winId, async () => {
     await store();
     if (await getOutboxEntry(doc.id)) return false; // 未送信の手元の変更があれば、タブは手元を優先する
-    if (hashOf(await capture(winId)) === h) return false;
-    await applyToWindow(winId, doc, false);
+    const aliases = await getAliases();
+    if (hashOf(await capture(winId, aliases)) === h) return false;
+    await applyToWindow(winId, doc, false, aliases, aliasRecorder(doc.id));
     return true;
   });
 }
@@ -288,6 +300,7 @@ async function handleRemoteDelete(fileId: string): Promise<void> {
   if (!hit) return;
   // ウィンドウは閉じずに関連付けだけ外す（他端末で消しても手元のタブは失わない）
   await unmapWorkspace(hit.doc.id);
+  await removeAliasesOfWorkspace(hit.doc.id);
   await deleteWorkspaceCache(hit.doc.id);
 }
 
@@ -410,8 +423,18 @@ export async function openWorkspace(wsId: string): Promise<void> {
   if (winId === undefined) throw new Error("ウィンドウを作成できませんでした");
   // 適用が終わるまで（＋関連付けの間）のタブイベントを無視するため、ガードを先に立てる
   await withApplyGuard(winId, async () => {
+    // 作ったタブに要求した URL を別名として付ける（リダイレクトされても要求した URL で記録・照合する）。
+    // windows.create の戻り値に頼らず、タブを取り直す（並びは urls の順。actual は今見えている URL）
+    const record = aliasRecorder(wsId);
+    const tabs = (await chrome.tabs.query({ windowId: winId })).sort((a, b) => a.index - b.index);
+    if (urls.length > 0 && tabs.length === urls.length) {
+      // まとめて呼ぶ（取り直した直後に全タブを同期的に「保存待ち」にして、保存前のイベントを取りこぼさない）
+      await Promise.all(
+        tabs.map((t, i) => (t.id === undefined ? undefined : record(t.id, urls[i]!, urlOf(t), t.status === "complete"))),
+      );
+    }
     await mapWindow(winId, wsId);
-    await applyToWindow(winId, doc, true);
+    await applyToWindow(winId, doc, true, await getAliases(), record);
     return true;
   });
   // 未送信があるときは、古いタブのまま Drive に書かないよう touch しない（後の送信で時刻も更新される）
@@ -439,6 +462,7 @@ export async function closeWorkspace(wsId: string): Promise<void> {
   await captureAndFlush(wsId).catch((e) => console.warn("[close]", e));
   const winId = await windowOf(wsId);
   await unmapWorkspace(wsId);
+  await removeAliasesOfWorkspace(wsId);
   if (winId !== null && (await windowExists(winId))) await chrome.windows.remove(winId);
 }
 
@@ -460,6 +484,7 @@ export async function deleteWorkspace(wsId: string): Promise<void> {
   const cached = (await getWorkspaces())[wsId];
   if (cached?.fileId) await drive.remove(cached.fileId);
   await unmapWorkspace(wsId);
+  await removeAliasesOfWorkspace(wsId);
   await deleteWorkspaceCache(wsId);
   // 関連付けとキャッシュを外した後に消す（間に来たタブイベントで積み直されないように）
   await removeOutbox(wsId);
@@ -472,13 +497,17 @@ export async function rematchWindows(): Promise<void> {
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const all = Object.values(await getWorkspaces());
   const box = await getOutbox();
+  const stale = await getStaleAliases();
   const candidates: { win: number; ws: CachedWorkspace; score: number }[] = [];
 
   for (const w of windows) {
     if (w.id === undefined || map[String(w.id)] || w.incognito) continue;
-    const urls = (w.tabs ?? []).map(urlOf).filter(isSyncable);
+    const actualUrls = (w.tabs ?? []).map(urlOf);
     for (const ws of all) {
       if (mappedWs.has(ws.doc.id)) continue;
+      // 再起動前にリダイレクトされていたタブは、要求した URL に読み替えて比べる
+      const toRequested = staleUrlMap(stale, ws.doc.id);
+      const urls = actualUrls.map((u) => toRequested.get(u) ?? u).filter(isSyncable);
       // 未送信があればそちらが最後の状態（送信前に再起動した場合など）
       const tabs = box[ws.doc.id]?.tabs ?? ws.doc.tabs;
       const score = similarity(urls, tabs.map((t) => t.url));
@@ -488,10 +517,25 @@ export async function rematchWindows(): Promise<void> {
   // スコアの高い組から確定（1対1）
   candidates.sort((a, b) => b.score - a.score);
   const usedWin = new Set<number>();
+  let rest = stale;
   for (const c of candidates) {
     if (usedWin.has(c.win) || mappedWs.has(c.ws.doc.id)) continue;
+    // 再起動前の別名を、復元されたタブへ付け直す（関連付けより前に付けて、直後の撮影でリダイレクト先を送らないようにする）
+    const tabs = (windows.find((w) => w.id === c.win)?.tabs ?? []).flatMap((t) =>
+      t.id === undefined ? [] : [{ id: t.id, url: urlOf(t), loaded: t.status === "complete" }],
+    );
+    const r = restoreAliases(rest, c.ws.doc.id, tabs, Date.now());
+    rest = r.rest;
+    await commitRestoredAliases(r.restored, rest);
     await mapWindow(c.win, c.ws.doc.id);
     usedWin.add(c.win);
     mappedWs.add(c.ws.doc.id);
   }
+}
+
+/** ワークスペースとウィンドウの関連付けを外す（別名も消す。以後は普通のウィンドウとして扱う） */
+export async function detachWindow(windowId: number): Promise<void> {
+  const wsId = (await getWindowMap())[String(windowId)];
+  await unmapWindow(windowId);
+  if (wsId) await removeAliasesOfWorkspace(wsId);
 }

@@ -1,3 +1,4 @@
+import type { TabAlias } from "./alias.js";
 import { type OutboxEntry, sameEntry } from "./outbox.js";
 import type { AuthState, CachedWorkspace, Settings } from "./types.js";
 
@@ -17,6 +18,11 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
+interface SessionSchema {
+  /** このブラウザセッションで別名を整理済みか（済むまでは存在しないタブの別名を掃除しない） */
+  aliasesReady: true;
+}
+
 interface LocalSchema {
   settings: Settings;
   auth: AuthState;
@@ -31,6 +37,10 @@ interface LocalSchema {
   sortOrder: SortOrder;
   /** 未送信のワークスペースの最新状態（wsId → 状態）。ブラウザ再起動をまたいで残すため local に置く */
   outbox: Record<string, OutboxEntry>;
+  /** 反映で作ったタブの別名（tabId → 別名）。tabId はブラウザ再起動で変わるので、起動時に staleAliases へ移す */
+  tabAliases: Record<string, TabAlias>;
+  /** ブラウザ再起動前の別名。再対応づけしたウィンドウのタブへ付け直す */
+  staleAliases: TabAlias[];
 }
 
 export type SortOrder = "recent" | "name";
@@ -154,5 +164,124 @@ export async function removeOutbox(wsId: string): Promise<void> {
     if (!(wsId in box)) return;
     delete box[wsId];
     await setLocal("outbox", box);
+  });
+}
+
+// ---- 反映で作ったタブの別名 ----
+// タブの読み込みイベントのたびに読むので、メモリにも持つ（別名を使うのは background だけ）。
+// サービスワーカーが再起動したら最初の読み書きで storage から読み直す
+
+let aliasCache: Record<string, TabAlias> | undefined;
+/** putAlias で保存待ちのタブ。保存前に来たイベントを「別名なし」として捨てないため */
+const pendingAliasTabs = new Map<number, number>();
+
+async function loadAliases(): Promise<Record<string, TabAlias>> {
+  aliasCache ??= (await getLocal("tabAliases")) ?? {};
+  return aliasCache;
+}
+
+async function saveAliases(next: Record<string, TabAlias>): Promise<void> {
+  aliasCache = next;
+  await setLocal("tabAliases", next);
+}
+
+/** 別名が無いことが確実なら true（メモリに読み込み済みで、そのタブの別名が無い）。storage は読まない */
+export function surelyNoAlias(tabId: number): boolean {
+  return aliasCache !== undefined && !pendingAliasTabs.has(tabId) && !(String(tabId) in aliasCache);
+}
+
+/** putAlias / updateAlias と同じ直列化を通して読む（先に始まった更新の結果が必ず見える） */
+export async function getAliases(): Promise<Record<string, TabAlias>> {
+  return serialize(async () => ({ ...(await loadAliases()) }));
+}
+
+export async function putAlias(tabId: number, alias: TabAlias): Promise<void> {
+  // 直列化の前に（同期的に）保存待ちとして印を付ける
+  pendingAliasTabs.set(tabId, (pendingAliasTabs.get(tabId) ?? 0) + 1);
+  try {
+    await serialize(async () => saveAliases({ ...(await loadAliases()), [String(tabId)]: alias }));
+  } finally {
+    const n = (pendingAliasTabs.get(tabId) ?? 1) - 1;
+    if (n > 0) pendingAliasTabs.set(tabId, n);
+    else pendingAliasTabs.delete(tabId);
+  }
+}
+
+/** 別名があれば fn で更新する。外したら true */
+export async function updateAlias(tabId: number, fn: (a: TabAlias) => TabAlias | null): Promise<boolean> {
+  return serialize(async () => {
+    const all = await loadAliases();
+    const cur = all[String(tabId)];
+    if (!cur) return false;
+    const next = fn(cur);
+    if (next === cur) return false;
+    const copy = { ...all };
+    if (next) copy[String(tabId)] = next;
+    else delete copy[String(tabId)];
+    await saveAliases(copy);
+    return next === null;
+  });
+}
+
+/** 条件に合う別名を消す */
+export async function removeAliasesWhere(pred: (tabId: number, a: TabAlias) => boolean): Promise<void> {
+  await serialize(async () => {
+    const all = await loadAliases();
+    const kept = Object.fromEntries(Object.entries(all).filter(([id, a]) => !pred(Number(id), a)));
+    if (Object.keys(kept).length !== Object.keys(all).length) await saveAliases(kept);
+  });
+}
+
+export async function removeAlias(tabId: number): Promise<void> {
+  await removeAliasesWhere((id) => id === tabId);
+}
+
+export async function removeAliasesOfWorkspace(wsId: string): Promise<void> {
+  await removeAliasesWhere((_id, a) => a.wsId === wsId);
+}
+
+/** prerender 等でタブが差し替わったときに別名を引き継ぐ */
+export async function moveAlias(fromTabId: number, toTabId: number): Promise<void> {
+  await serialize(async () => {
+    const all = await loadAliases();
+    const cur = all[String(fromTabId)];
+    if (!cur) return;
+    const copy = { ...all, [String(toTabId)]: cur };
+    delete copy[String(fromTabId)];
+    await saveAliases(copy);
+  });
+}
+
+/** ブラウザ起動時: tabId が変わるので、今の別名を「再起動前の別名」へ移す */
+export async function rotateAliasesOnStartup(): Promise<void> {
+  await serialize(async () => {
+    await setLocal("staleAliases", Object.values(await loadAliases()));
+    await saveAliases({});
+    await markAliasesReady();
+  });
+}
+
+/**
+ * 別名を整理済みとして記録する（storage.session はブラウザ終了で消える）。
+ * 起動直後、退避前に掃除が走って「再起動後に付け直すための別名」を消さないようにするため
+ */
+export async function markAliasesReady(): Promise<void> {
+  await chrome.storage.session.set({ aliasesReady: true } satisfies SessionSchema);
+}
+
+export async function aliasesReady(): Promise<boolean> {
+  const r = await chrome.storage.session.get("aliasesReady");
+  return r.aliasesReady === true;
+}
+
+export async function getStaleAliases(): Promise<TabAlias[]> {
+  return (await getLocal("staleAliases")) ?? [];
+}
+
+/** 再起動前の別名の一部をタブに付け直し、残りを staleAliases に戻す */
+export async function commitRestoredAliases(restored: Record<string, TabAlias>, rest: TabAlias[]): Promise<void> {
+  await serialize(async () => {
+    await saveAliases({ ...(await loadAliases()), ...restored });
+    await setLocal("staleAliases", rest);
   });
 }

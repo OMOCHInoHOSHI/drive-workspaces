@@ -1,11 +1,29 @@
+import { nextAlias, pruneAliases } from "./alias.js";
 import { AuthRequiredError, isSignedIn } from "./auth.js";
 import { debounceWithMaxWait } from "./outbox.js";
-import { getLocal, getOutbox, getWindowMap, getWorkspaces, setLocal, unmapWindow } from "./store.js";
+import {
+  aliasesReady,
+  getAliases,
+  getLocal,
+  getOutbox,
+  getWindowMap,
+  getWorkspaces,
+  markAliasesReady,
+  moveAlias,
+  removeAlias,
+  removeAliasesWhere,
+  rotateAliasesOnStartup,
+  setLocal,
+  surelyNoAlias,
+  unmapWindow,
+  updateAlias,
+} from "./store.js";
 import {
   captureToOutbox,
   closeWorkspace,
   createFromWindow,
   deleteWorkspace,
+  detachWindow,
   markClosing,
   onEnqueued,
   openWorkspace,
@@ -59,12 +77,14 @@ onEnqueued(debounceWithMaxWait(() => void runSync(), DEBOUNCE_MS, MAX_WAIT_MS));
  * タブイベントを受けたその場で（await の前に）処理中として登録する。
  * リモート適用はこれが終わるのを待つので、適用直前の操作が適用で消されない
  */
-function onWindowChanged(windowId: number | undefined): Promise<void> {
+function onWindowChanged(windowId: number | undefined, before?: () => Promise<boolean>): Promise<void> {
   if (windowId === undefined || windowId < 0) return Promise.resolve();
-  return trackWindowWork(windowId, handleWindowChanged(windowId));
+  return trackWindowWork(windowId, handleWindowChanged(windowId, before));
 }
 
-async function handleWindowChanged(windowId: number): Promise<void> {
+/** before: 撮影の前に行う処理（別名の更新）。false を返したら撮影しない */
+async function handleWindowChanged(windowId: number, before?: () => Promise<boolean>): Promise<void> {
+  if (before && !(await before())) return;
   const wsId = (await getWindowMap())[String(windowId)];
   if (!wsId) return;
   // ウィンドウが生きているうちに撮影しておく（×で閉じられた後は読めないため）。
@@ -73,16 +93,30 @@ async function handleWindowChanged(windowId: number): Promise<void> {
 }
 
 chrome.tabs.onCreated.addListener((tab) => void onWindowChanged(tab.windowId));
-chrome.tabs.onUpdated.addListener((_id, info, tab) => {
-  if (info.url !== undefined || info.pinned !== undefined || info.groupId !== undefined) {
-    void onWindowChanged(tab.windowId);
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  // 別名の無いタブの読み込み状態だけの変化は、storage も読まず処理中にも数えない
+  const navigation = (info.url !== undefined || info.status !== undefined) && !surelyNoAlias(tabId);
+  const structural = info.url !== undefined || info.pinned !== undefined || info.groupId !== undefined;
+  if (!navigation && !structural) return;
+  void onWindowChanged(tab.windowId, async () => {
+    // 反映で作ったタブの別名を先に更新する（ユーザー自身の移動なら外して、実際の URL を撮影させる）
+    const now = Date.now();
+    const change = { url: info.url, status: info.status };
+    const removed = navigation && (await updateAlias(tabId, (a) => nextAlias(a, change, !!tab.active, now)));
+    return structural || removed;
+  });
+});
+chrome.tabs.onRemoved.addListener((tabId, info) => {
+  // ウィンドウを閉じるときのタブ削除は無視（空の状態を保存してしまうため）。
+  // 別名も残す（ブラウザ終了時の削除なら、再起動後に復元されたタブへ付け直すため。起動時に整理される）
+  if (info.isWindowClosing) {
+    markClosing(info.windowId);
+    return;
   }
+  void removeAlias(tabId);
+  void onWindowChanged(info.windowId);
 });
-chrome.tabs.onRemoved.addListener((_id, info) => {
-  // ウィンドウを閉じるときのタブ削除は無視（空の状態を保存してしまうため）
-  if (info.isWindowClosing) markClosing(info.windowId);
-  else void onWindowChanged(info.windowId);
-});
+chrome.tabs.onReplaced.addListener((added, removed) => void moveAlias(removed, added));
 chrome.tabs.onMoved.addListener((_id, info) => void onWindowChanged(info.windowId));
 chrome.tabs.onAttached.addListener((_id, info) => void onWindowChanged(info.newWindowId));
 chrome.tabs.onDetached.addListener((_id, info) => void onWindowChanged(info.oldWindowId));
@@ -108,15 +142,34 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 // ---- 定期実行・起動 ----
 
+/**
+ * 存在しないタブの別名を掃除する（×で閉じたウィンドウの分など）。
+ * ブラウザ終了時に閉じたタブの分は、この掃除が走る前に終了するので、再起動後の付け直し用に残る
+ */
+async function pruneStaleTabAliases(): Promise<void> {
+  // 別名を先に読んでからタブを調べる（別名はタブを作った後に付くので、読んだ別名のタブが生きていれば必ず一覧に出る）。
+  // 消すのは読んだ時点にあった別名だけ（調べている間に付いた新しい別名は消さない）
+  if (!(await aliasesReady())) return; // 起動直後で、再起動前の別名をまだ退避していない
+  const before = await getAliases();
+  if (Object.keys(before).length === 0) return;
+  const live = new Set((await chrome.tabs.query({})).flatMap((t) => (t.id === undefined ? [] : [t.id])));
+  const dead = new Set(Object.keys(before).filter((id) => !(id in pruneAliases(before, live))));
+  if (dead.size > 0) await removeAliasesWhere((id) => dead.has(String(id)));
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === TICK) void runSync();
+  if (alarm.name === TICK) {
+    void runSync();
+    void pruneStaleTabAliases().catch((e) => console.warn("[alias prune]", e));
+  }
   if (alarm.name === REMATCH) void withLock(rematchWindows);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void (async () => {
-    // windowId はブラウザ再起動で変わるため、古い対応表は捨てて貼り直す
+    // windowId・tabId はブラウザ再起動で変わるため、古い対応表は捨てて貼り直す（別名は付け直し用に退避）
     await setLocal("windowMap", {});
+    await rotateAliasesOnStartup();
     await ensureAlarm();
     // セッション復元でウィンドウが出そろうのを待つ。念のため30秒後にもう一度
     setTimeout(() => void withLock(rematchWindows), 3000);
@@ -126,6 +179,8 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  // インストール・更新ではブラウザは再起動していない（tabId はそのまま有効）ので、別名はそのまま使える
+  void markAliasesReady();
   void ensureAlarm();
   void runSync();
 });
@@ -184,7 +239,7 @@ async function handle(req: Request): Promise<unknown> {
     case "delete":
       return withLock(() => deleteWorkspace(req.wsId));
     case "detach":
-      return withLock(() => unmapWindow(req.windowId));
+      return withLock(() => detachWindow(req.windowId));
   }
 }
 
