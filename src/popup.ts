@@ -94,7 +94,6 @@ function showMenu(btn: HTMLElement, items: MenuItem[], focusFirst: boolean) {
     };
     menu.append(b);
   }
-  menu.onclick = (ev) => ev.stopPropagation();
   document.body.append(menu);
 
   const r = btn.getBoundingClientRect();
@@ -118,7 +117,17 @@ function showMenu(btn: HTMLElement, items: MenuItem[], focusFirst: boolean) {
   if (focusFirst) menu.querySelector("button")?.focus();
 }
 
-document.addEventListener("click", closeMenu);
+// メニューが開いている間、メニュー外のクリックは閉じるだけにして、下の要素（行を開く・別の ⋯ など）には届けない
+document.addEventListener(
+  "click",
+  (e) => {
+    if (!openMenu || openMenu.menu.contains(e.target as Node)) return;
+    e.stopPropagation();
+    e.preventDefault();
+    closeMenu();
+  },
+  true,
+);
 document.addEventListener("keydown", (e) => {
   if (!openMenu) return;
   const { menu, btn } = openMenu;
@@ -198,9 +207,9 @@ async function render() {
     more.setAttribute("aria-expanded", "false");
     more.onclick = (ev) => {
       ev.stopPropagation();
-      if (openMenu?.btn === more) closeMenu();
+      // 開いている間のクリックは document のキャプチャで閉じるだけになるので、ここに来るのは閉じているときのみ。
       // detail === 0 はキーボード（Enter/Space）での押下。その場合は先頭の項目にフォーカスを移す
-      else showMenu(more, items, ev.detail === 0);
+      showMenu(more, items, ev.detail === 0);
     };
 
     const row = el(
