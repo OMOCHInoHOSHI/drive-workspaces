@@ -62,9 +62,11 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .popup header h1 { font-size: 14px; margin: 0; }
 .listbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .listbar select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
-.list { max-height: 350px; overflow-y: auto; }
+.list { max-height: 350px; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px; }
 /* 名前などの情報 | 「開いています」 | ⋯（名前の行の右端） */
-.ws { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; cursor: pointer; }
+/* 1件ずつ枠で囲んだカードにする。開いているものは枠をアクセント色に */
+.ws { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.ws.open { border-color: var(--accent); }
 .ws:hover { background: var(--hover); }
 .ws .meta { flex: 1 1 0; min-width: 0; }
 .ws .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -83,6 +85,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .row input { flex: 1; min-width: 0; }
 .row button { flex: none; white-space: nowrap; }
 .empty { padding: 16px 12px; color: var(--muted); }
+.list > .empty { padding: 8px 4px; }
 
 /* options */
 .options { max-width: 640px; margin: 32px auto; padding: 0 16px; }

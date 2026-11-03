@@ -184,7 +184,7 @@ async function render() {
 
     const row = el(
       "div",
-      { className: "ws", title: "クリックで開く" },
+      { className: w.openWindowId !== null ? "ws open" : "ws", title: "クリックで開く" },
       el(
         "div",
         { className: "meta" },
