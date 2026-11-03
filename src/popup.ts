@@ -114,7 +114,16 @@ async function render() {
         el("div", { className: "sub", textContent: `${w.tabCount} 個のタブ · ${fmtTime(w.updatedAt)}` }),
         el("div", { className: "sub place", textContent: `最終: ${placeLabel(w)}` }),
       ),
-      ...(w.openWindowId !== null ? [el("span", { className: "chip", textContent: "開いています" })] : []),
+      ...(w.openWindowId !== null
+        ? [
+            el(
+              "div",
+              { className: "tags" },
+              el("span", { className: "chip", textContent: "開いています" }),
+              ...(w.openWindowId === currentWindowId ? [el("span", { className: "chip here", textContent: "このウィンドウ" })] : []),
+            ),
+          ]
+        : []),
       actions,
     );
     row.onclick = () => {
