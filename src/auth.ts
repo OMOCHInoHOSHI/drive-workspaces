@@ -35,8 +35,10 @@ function base64url(bytes: Uint8Array): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** base64url でちょうど len 文字（実質 len*6 ビット）を作る */
 function randomString(len = 64): string {
-  return base64url(crypto.getRandomValues(new Uint8Array(len))).slice(0, len);
+  const bytes = Math.ceil((len * 3) / 4); // 4文字あたり3バイト
+  return base64url(crypto.getRandomValues(new Uint8Array(bytes))).slice(0, len);
 }
 
 async function sha256(input: string): Promise<Uint8Array> {
