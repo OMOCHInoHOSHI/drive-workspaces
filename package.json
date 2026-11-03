@@ -7,10 +7,12 @@
   "scripts": {
     "keygen": "node scripts/gen-key.mjs",
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test \"build/test/*.test.js\""
   },
   "devDependencies": {
     "@types/chrome": "0.0.300",
+    "@types/node": "^26.6.6",
     "typescript": "^5.6.0"
   }
 }

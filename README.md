@@ -118,8 +118,10 @@ src/
   auth.ts        launchWebAuthFlow + 認可コード + PKCE、リフレッシュトークン管理
   store.ts       chrome.storage のラッパー
   popup.* / options.*  UI
+  test/          純関数の単体テスト（npm test。Node 標準の node --test を使用）
 ```
 
+- **テスト**: `npm test` で `hashOf`・`isSyncable`・`isWorkspaceDoc` などの純関数の単体テストが走ります（node:test などの標準機能のみで、テストランナーの追加依存はありません）
 - **保存形式**: ワークスペース1つにつき `ws-<uuid>.json` 1ファイル。別々のワークスペースを別端末で同時に触っても衝突しません
 - **ローカル → Drive**: タブの変更で dirty を立て、2秒デバウンス（サービスワーカーが止まっても30秒アラームで拾う）
 - **Drive → ローカル**: `changes.list`（`spaces=appDataFolder`）を30秒ごと＋フォーカス時にポーリング
@@ -132,6 +134,6 @@ src/
 - **自分専用の前提です。** Google の「ウェブアプリケーション」型クライアントは PKCE を使っても
   トークン交換に client_secret を要求するため、シークレットを拡張内（`chrome.storage.local`）に保持しています。
   配布する場合はトークン交換をサーバー側に移す必要があります
-- 動作確認しているのは型チェックと、タブ差分適用ロジックのモックテストまでです。
+- 動作確認しているのは型チェック、`npm test` の単体テスト、タブ差分適用ロジックのモックテストまでです。
   実ブラウザでの動作（特に Brave / Vivaldi / Opera の `launchWebAuthFlow`）は未検証です
 - サイトのリダイレクト（http→https など）で URL が変わると、それが他端末にも反映されます（1回で収束します）
