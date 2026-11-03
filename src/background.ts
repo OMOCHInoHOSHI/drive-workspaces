@@ -75,7 +75,7 @@ chrome.tabGroups.onUpdated.addListener((g) => void onWindowChanged(g.windowId));
 chrome.tabGroups.onRemoved.addListener((g) => void onWindowChanged(g.windowId));
 chrome.tabGroups.onMoved.addListener((g) => void onWindowChanged(g.windowId));
 
-chrome.windows.onRemoved.addListener((windowId) => void unmapWindow(windowId));
+chrome.windows.onRemoved.addListener((windowId) => void withLock(() => unmapWindow(windowId)));
 
 // フォーカスが戻ったときに取り込む（30秒ポーリングの待ち時間を体感上減らす）
 let lastFocusPull = 0;
@@ -165,11 +165,16 @@ async function handle(req: Request): Promise<unknown> {
     case "delete":
       return withLock(() => deleteWorkspace(req.wsId));
     case "detach":
-      return unmapWindow(req.windowId);
+      return withLock(() => unmapWindow(req.windowId));
   }
 }
 
-chrome.runtime.onMessage.addListener((req: Request, _sender, sendResponse: (r: Response) => void) => {
+chrome.runtime.onMessage.addListener((req: Request, sender, sendResponse: (r: Response) => void) => {
+  // externally_connectable 未設定なら同一拡張からのみだが、防衛的に送信元を確認する
+  if (sender.id !== undefined ? sender.id !== chrome.runtime.id : sender.url?.startsWith(chrome.runtime.getURL("")) !== true) {
+    sendResponse({ ok: false, error: "許可されていない送信元からのメッセージです" });
+    return false;
+  }
   handle(req)
     .then((data) => sendResponse({ ok: true, data }))
     .catch((e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
