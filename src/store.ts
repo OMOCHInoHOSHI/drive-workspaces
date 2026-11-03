@@ -1,3 +1,4 @@
+import { type OutboxEntry, sameEntry } from "./outbox.js";
 import type { AuthState, CachedWorkspace, Settings } from "./types.js";
 
 /**
@@ -7,8 +8,8 @@ import type { AuthState, CachedWorkspace, Settings } from "./types.js";
 
 // ---- 排他制御（read-modify-write を直列に実行する） ----
 // withLock（sync 側）とは別に、storage への読み書きを短時間で直列化する。
-// タブイベント由来の markDirty が takeDirty の読み書きの合間に割り込むと
-// dirty フラグが消えるため、ストレージ操作単位で順序を保証する。
+// タブイベント由来の putOutbox が送信後の removeOutboxIf の読み書きの合間に割り込むと
+// 新しく積んだ状態が消えるため、ストレージ操作単位で順序を保証する。
 let storageQueue: Promise<unknown> = Promise.resolve();
 function serialize<T>(fn: () => Promise<T>): Promise<T> {
   const p = storageQueue.then(fn, fn);
@@ -28,14 +29,11 @@ interface LocalSchema {
   lastError: string | null;
   /** ポップアップ一覧の並び順（プロファイルごと） */
   sortOrder: SortOrder;
+  /** 未送信のワークスペースの最新状態（wsId → 状態）。ブラウザ再起動をまたいで残すため local に置く */
+  outbox: Record<string, OutboxEntry>;
 }
 
 export type SortOrder = "recent" | "name";
-
-interface SessionSchema {
-  /** ローカル変更があり未アップロードのワークスペース */
-  dirty: Record<string, true>;
-}
 
 export async function getLocal<K extends keyof LocalSchema>(key: K): Promise<LocalSchema[K] | undefined> {
   const r = await chrome.storage.local.get(key);
@@ -48,15 +46,6 @@ export async function setLocal<K extends keyof LocalSchema>(key: K, value: Local
 
 export async function removeLocal(key: keyof LocalSchema): Promise<void> {
   await chrome.storage.local.remove(key);
-}
-
-export async function getSession<K extends keyof SessionSchema>(key: K): Promise<SessionSchema[K] | undefined> {
-  const r = await chrome.storage.session.get(key);
-  return r[key] as SessionSchema[K] | undefined;
-}
-
-export async function setSession<K extends keyof SessionSchema>(key: K, value: SessionSchema[K]): Promise<void> {
-  await chrome.storage.session.set({ [key]: value });
 }
 
 export async function getDeviceId(): Promise<string> {
@@ -126,26 +115,44 @@ export async function windowOf(wsId: string): Promise<number | null> {
   return null;
 }
 
-export async function markDirty(wsId: string): Promise<void> {
-  await serialize(async () => {
-    const d = (await getSession("dirty")) ?? {};
-    d[wsId] = true;
-    await setSession("dirty", d);
-  });
+export async function getOutbox(): Promise<Record<string, OutboxEntry>> {
+  return (await getLocal("outbox")) ?? {};
 }
 
-export async function takeDirty(): Promise<string[]> {
+/**
+ * 状態を outbox に積む。skipIf はストレージ操作と同じ直列化の中で評価する
+ *（リモート適用の開始と「積むかどうかの判定」が入れ違わないようにするため）。積んだら true
+ */
+export async function putOutbox(wsId: string, entry: OutboxEntry, skipIf?: () => boolean): Promise<boolean> {
   return serialize(async () => {
-    const d = (await getSession("dirty")) ?? {};
-    await setSession("dirty", {});
-    return Object.keys(d);
+    if (skipIf?.()) return false;
+    const box = await getOutbox();
+    box[wsId] = entry;
+    await setLocal("outbox", box);
+    return true;
   });
 }
 
-export async function clearDirty(wsId: string): Promise<void> {
+/** 1件読む。putOutbox と同じ直列化を通すので、先に始まった書き込みの結果が必ず見える */
+export async function getOutboxEntry(wsId: string): Promise<OutboxEntry | undefined> {
+  return serialize(async () => (await getOutbox())[wsId]);
+}
+
+/** 送信した状態がまだ outbox の最新なら消す（送信中に新しい状態が積まれていたら残す） */
+export async function removeOutboxIf(wsId: string, sent: OutboxEntry): Promise<void> {
   await serialize(async () => {
-    const d = (await getSession("dirty")) ?? {};
-    delete d[wsId];
-    await setSession("dirty", d);
+    const box = await getOutbox();
+    if (!sameEntry(box[wsId], sent)) return;
+    delete box[wsId];
+    await setLocal("outbox", box);
+  });
+}
+
+export async function removeOutbox(wsId: string): Promise<void> {
+  await serialize(async () => {
+    const box = await getOutbox();
+    if (!(wsId in box)) return;
+    delete box[wsId];
+    await setLocal("outbox", box);
   });
 }

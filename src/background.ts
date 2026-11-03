@@ -1,12 +1,14 @@
 import { AuthRequiredError, isSignedIn } from "./auth.js";
-import { getLocal, getWindowMap, getWorkspaces, markDirty, setLocal, unmapWindow } from "./store.js";
+import { debounceWithMaxWait } from "./outbox.js";
+import { getLocal, getWindowMap, getWorkspaces, setLocal, unmapWindow } from "./store.js";
 import {
+  captureToOutbox,
   closeWorkspace,
   createFromWindow,
   deleteWorkspace,
-  isApplying,
+  markClosing,
+  onEnqueued,
   openWorkspace,
-  pull,
   rematchWindows,
   renameWorkspace,
   syncAll,
@@ -22,9 +24,10 @@ import type { Request, Response, StatusResponse } from "./types.js";
 
 const TICK = "tick";
 const REMATCH = "rematch";
-const DEBOUNCE_MS = 2000;
-
-let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+// 撮影はイベントごとに即時に行うので、送信だけ短くまとめる。操作が続いても最大 MAX_WAIT_MS で送る
+const DEBOUNCE_MS = 500;
+const MAX_WAIT_MS = 2000;
+const FOCUS_SYNC_INTERVAL_MS = 3000;
 
 async function ready(): Promise<boolean> {
   return isSignedIn();
@@ -47,14 +50,17 @@ async function ensureAlarm(): Promise<void> {
 
 // ---- タブ変更の検知 ----
 
+// outbox に積まれたら送信を予約する。
+// サービスワーカーが止まってタイマーが消えても、outbox は storage に残っているので定期アラームで送られる
+onEnqueued(debounceWithMaxWait(() => void runSync(), DEBOUNCE_MS, MAX_WAIT_MS));
+
 async function onWindowChanged(windowId: number | undefined): Promise<void> {
-  if (windowId === undefined || windowId < 0 || isApplying(windowId)) return;
+  if (windowId === undefined || windowId < 0) return;
   const wsId = (await getWindowMap())[String(windowId)];
   if (!wsId) return;
-  await markDirty(wsId);
-  clearTimeout(debounceTimer);
-  // サービスワーカーが止まってタイマーが消えても、定期アラームで拾われる
-  debounceTimer = setTimeout(() => void runSync(), DEBOUNCE_MS);
+  // ウィンドウが生きているうちに撮影しておく（×で閉じられた後は読めないため）。
+  // リモート適用中なら撮影は見送られ、適用ガードの解除後に撮り直される
+  await captureToOutbox(windowId, wsId);
 }
 
 chrome.tabs.onCreated.addListener((tab) => void onWindowChanged(tab.windowId));
@@ -65,7 +71,8 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
 });
 chrome.tabs.onRemoved.addListener((_id, info) => {
   // ウィンドウを閉じるときのタブ削除は無視（空の状態を保存してしまうため）
-  if (!info.isWindowClosing) void onWindowChanged(info.windowId);
+  if (info.isWindowClosing) markClosing(info.windowId);
+  else void onWindowChanged(info.windowId);
 });
 chrome.tabs.onMoved.addListener((_id, info) => void onWindowChanged(info.windowId));
 chrome.tabs.onAttached.addListener((_id, info) => void onWindowChanged(info.newWindowId));
@@ -75,17 +82,19 @@ chrome.tabGroups.onUpdated.addListener((g) => void onWindowChanged(g.windowId));
 chrome.tabGroups.onRemoved.addListener((g) => void onWindowChanged(g.windowId));
 chrome.tabGroups.onMoved.addListener((g) => void onWindowChanged(g.windowId));
 
-chrome.windows.onRemoved.addListener((windowId) => void withLock(() => unmapWindow(windowId)));
+chrome.windows.onRemoved.addListener((windowId) => {
+  markClosing(windowId);
+  void withLock(() => unmapWindow(windowId));
+});
 
-// フォーカスが戻ったときに取り込む（30秒ポーリングの待ち時間を体感上減らす）
-let lastFocusPull = 0;
+// フォーカスが移ったときに同期する（30秒ポーリングの待ち時間を体感上減らす）。
+// 取り込みだけでなく送信も先に行う（未送信の変更を先に Drive へ上げる）
+let lastFocusSync = 0;
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  if (Date.now() - lastFocusPull < 10_000) return;
-  lastFocusPull = Date.now();
-  void withLock(async () => {
-    if (await ready()) await pull();
-  }).catch((e) => console.warn("[focus pull]", e));
+  if (Date.now() - lastFocusSync < FOCUS_SYNC_INTERVAL_MS) return;
+  lastFocusSync = Date.now();
+  void runSync();
 });
 
 // ---- 定期実行・起動 ----
