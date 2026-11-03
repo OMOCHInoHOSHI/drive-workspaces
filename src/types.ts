@@ -7,6 +7,8 @@ export interface WorkspaceDoc {
   updatedAt: number;
   updatedBy: string; // deviceId
   deviceName: string;
+  /** 最後に使ったブラウザ（"Edge" "Chrome" など）。この項目の追加前に作られたデータには無い */
+  browser?: string;
   tabs: TabState[];
   groups: GroupState[];
 }
@@ -42,6 +44,8 @@ export interface Settings {
   clientId: string;
   clientSecret: string;
   deviceName: string;
+  /** ブラウザ名の手動指定。空なら自動判定 */
+  browserName?: string;
 }
 
 export interface AuthState {
@@ -72,6 +76,7 @@ export interface StatusResponse {
     tabCount: number;
     updatedAt: number;
     deviceName: string;
+    browser: string | null;
     openWindowId: number | null;
   }[];
 }

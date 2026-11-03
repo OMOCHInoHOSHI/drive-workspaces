@@ -11,6 +11,11 @@ function fmtTime(ms: number | null): string {
   return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** 「自宅PC / Edge」のような最後に使った場所の表示 */
+function placeLabel(w: StatusResponse["workspaces"][number]): string {
+  return [w.deviceName, w.browser ?? "ブラウザ不明"].filter(Boolean).join(" / ");
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {
   const e = Object.assign(document.createElement(tag), props);
   e.append(...children);
@@ -88,7 +93,8 @@ async function render() {
         "div",
         { className: "meta" },
         el("div", { className: "name", textContent: w.name }),
-        el("div", { className: "sub", textContent: `${w.tabCount} 個のタブ · ${fmtTime(w.updatedAt)} ${w.deviceName}` }),
+        el("div", { className: "sub", textContent: `${w.tabCount} 個のタブ · ${fmtTime(w.updatedAt)}` }),
+        el("div", { className: "sub place", textContent: `最終: ${placeLabel(w)}` }),
       ),
       ...(w.openWindowId !== null ? [el("span", { className: "chip", textContent: "開いています" })] : []),
       actions,

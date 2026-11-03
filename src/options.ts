@@ -1,4 +1,5 @@
 import { isSignedIn, redirectUri, signIn, signOut } from "./auth.js";
+import { detectBrowser } from "./browser.js";
 import { send } from "./messaging.js";
 import { getLocal, setLocal } from "./store.js";
 
@@ -18,6 +19,8 @@ async function init() {
   input("clientId").value = s?.clientId ?? "";
   input("clientSecret").value = s?.clientSecret ?? "";
   input("deviceName").value = s?.deviceName ?? "";
+  input("browserName").value = s?.browserName ?? "";
+  input("browserName").placeholder = `自動判定: ${detectBrowser()}`;
   await refreshAuthState();
 }
 
@@ -26,6 +29,7 @@ async function saveSettings() {
     clientId: input("clientId").value.trim(),
     clientSecret: input("clientSecret").value.trim(),
     deviceName: input("deviceName").value.trim(),
+    browserName: input("browserName").value.trim(),
   });
 }
 

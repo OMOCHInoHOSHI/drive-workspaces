@@ -1,3 +1,4 @@
+import { detectBrowser } from "./browser.js";
 import * as drive from "./drive.js";
 import { applyToWindow, capture, hashOf, isSyncable, similarity, urlOf } from "./snapshot.js";
 import {
@@ -48,8 +49,14 @@ async function windowExists(windowId: number): Promise<boolean> {
   }
 }
 
-async function deviceName(): Promise<string> {
-  return (await getLocal("settings"))?.deviceName || "不明な端末";
+/** この端末・ブラウザの識別情報。ワークスペースを書き込むたびに「最後に使った場所」として記録する */
+export async function whoAmI(): Promise<Pick<WorkspaceDoc, "updatedBy" | "deviceName" | "browser">> {
+  const s = await getLocal("settings");
+  return {
+    updatedBy: await getDeviceId(),
+    deviceName: s?.deviceName || "不明な端末",
+    browser: s?.browserName || detectBrowser(),
+  };
 }
 
 async function applyGuarded(windowId: number, doc: Pick<WorkspaceDoc, "tabs" | "groups">, activate: boolean) {
@@ -89,8 +96,7 @@ async function pushWorkspace(wsId: string): Promise<void> {
     tabs: snap.tabs,
     groups: snap.groups,
     updatedAt: Date.now(),
-    updatedBy: await getDeviceId(),
-    deviceName: await deviceName(),
+    ...(await whoAmI()),
   };
   const f = cached.fileId ? await drive.update(cached.fileId, doc) : await drive.create(doc);
   await putWorkspace({ doc, fileId: f.id, modifiedTime: f.modifiedTime, syncedHash: h });
@@ -211,8 +217,7 @@ export async function createFromWindow(windowId: number, name: string): Promise<
     id: crypto.randomUUID(),
     name: name.trim() || "無題のワークスペース",
     updatedAt: Date.now(),
-    updatedBy: await getDeviceId(),
-    deviceName: await deviceName(),
+    ...(await whoAmI()),
     tabs: snap.tabs,
     groups: snap.groups,
   };
@@ -238,6 +243,19 @@ export async function openWorkspace(wsId: string): Promise<void> {
   if (win?.id === undefined) throw new Error("ウィンドウを作成できませんでした");
   await mapWindow(win.id, wsId);
   await applyGuarded(win.id, cached.doc, true);
+  await touch(wsId);
+}
+
+/** 開いただけ（タブの変更なし）でも「最後に使った場所」を更新する */
+async function touch(wsId: string): Promise<void> {
+  const cached = (await getWorkspaces())[wsId];
+  if (!cached) return;
+  const me = await whoAmI();
+  const changed = (Object.keys(me) as (keyof typeof me)[]).some((k) => cached.doc[k] !== me[k]);
+  if (!changed) return;
+  const doc: WorkspaceDoc = { ...cached.doc, ...me, updatedAt: Date.now() };
+  const f = await drive.update(cached.fileId, doc);
+  await putWorkspace({ ...cached, doc, modifiedTime: f.modifiedTime });
 }
 
 export async function closeWorkspace(wsId: string): Promise<void> {
@@ -255,8 +273,7 @@ export async function renameWorkspace(wsId: string, name: string): Promise<void>
     ...cached.doc,
     name: name.trim() || cached.doc.name,
     updatedAt: Date.now(),
-    updatedBy: await getDeviceId(),
-    deviceName: await deviceName(),
+    ...(await whoAmI()),
   };
   const f = await drive.update(cached.fileId, doc);
   await putWorkspace({ ...cached, doc, modifiedTime: f.modifiedTime });

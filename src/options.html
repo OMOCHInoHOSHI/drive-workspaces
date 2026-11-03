@@ -18,7 +18,10 @@
       <label for="clientSecret">クライアントシークレット</label>
       <input type="password" id="clientSecret" autocomplete="off" />
       <label for="deviceName">この端末の名前（一覧に表示）</label>
-      <input type="text" id="deviceName" placeholder="例: 自宅PC Chrome" />
+      <input type="text" id="deviceName" placeholder="例: 自宅PC" />
+      <label for="browserName">ブラウザ名（空欄なら自動判定）</label>
+      <input type="text" id="browserName" />
+      <p class="muted">Vivaldi など自動判定できないブラウザは「Chromium」と表示されます。その場合はここに入力してください。</p>
       <div class="row"><button class="primary" id="save">保存</button> <span id="saved" class="muted"></span></div>
     </section>
 
