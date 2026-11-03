@@ -78,8 +78,9 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .ws .more { flex: none; width: 24px; height: 22px; padding: 0; border: none; border-radius: 4px; font-size: 16px; line-height: 1; color: var(--muted); opacity: 0; }
 .ws:hover .more, .ws:focus-within .more, .ws .more.open { opacity: 1; }
 .ws .more:hover, .ws .more.open { background: var(--line); color: var(--fg); }
-.menu { position: fixed; z-index: 10; display: grid; min-width: 120px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 12px rgb(0 0 0 / 0.2); }
+.menu { position: fixed; z-index: 10; display: grid; overflow-y: auto; min-width: 120px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 12px rgb(0 0 0 / 0.2); }
 .menu button { border: none; border-radius: 0; padding: 6px 12px; text-align: left; white-space: nowrap; }
+.menu button:focus-visible { outline: none; background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
 .controls { border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; gap: 8px; }
 .row { display: flex; gap: 6px; }
 .row input { flex: 1; min-width: 0; }

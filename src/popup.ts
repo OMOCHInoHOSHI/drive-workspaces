@@ -77,9 +77,10 @@ function closeMenu() {
 
 /**
  * ボタンの下にメニューを出す。リストのスクロール領域で切れないよう body 直下に fixed で置き、
- * 下に収まらなければ上に開く。
+ * 下に収まらなければ上に開く。どちらにも収まらなければ広い側に出し、メニュー内をスクロールさせる。
+ * fixed 要素はポップアップの高さに含まれないため、件数が少ないと上下とも足りないことがある。
  */
-function showMenu(btn: HTMLElement, items: MenuItem[]) {
+function showMenu(btn: HTMLElement, items: MenuItem[], focusFirst: boolean) {
   closeMenu();
   const menu = el("div", { className: "menu" });
   menu.setAttribute("role", "menu");
@@ -100,21 +101,40 @@ function showMenu(btn: HTMLElement, items: MenuItem[]) {
   const { offsetWidth: mw, offsetHeight: mh } = menu;
   const gap = 2;
   const margin = 4;
-  let top = r.bottom + gap;
-  if (top + mh > window.innerHeight - margin) top = Math.max(margin, r.top - gap - mh);
-  menu.style.top = `${top}px`;
+  const below = window.innerHeight - margin - (r.bottom + gap);
+  const above = r.top - gap - margin;
+  if (mh <= below || below >= above) {
+    menu.style.top = `${r.bottom + gap}px`;
+    menu.style.maxHeight = `${below}px`;
+  } else {
+    menu.style.top = `${Math.max(margin, r.top - gap - mh)}px`;
+    menu.style.maxHeight = `${above}px`;
+  }
   menu.style.left = `${Math.max(margin, r.right - mw)}px`;
 
   btn.classList.add("open");
   btn.setAttribute("aria-expanded", "true");
   openMenu = { menu, btn };
+  if (focusFirst) menu.querySelector("button")?.focus();
 }
 
 document.addEventListener("click", closeMenu);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && openMenu) {
+  if (!openMenu) return;
+  const { menu, btn } = openMenu;
+  if (e.key === "Escape") {
     e.preventDefault();
-    const { btn } = openMenu;
+    closeMenu();
+    btn.focus();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    // メニュー内を上下キーで移動（端で反対側へ回り込む）
+    e.preventDefault();
+    const buttons = Array.from(menu.querySelectorAll("button"));
+    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = e.key === "ArrowDown" ? (i + 1) % buttons.length : (i <= 0 ? buttons.length : i) - 1;
+    buttons[next]?.focus();
+  } else if (e.key === "Tab") {
+    // メニューは body 末尾にあり Tab 順が行から離れるので、閉じて ⋯ から通常の Tab 移動を続ける
     closeMenu();
     btn.focus();
   }
@@ -179,7 +199,8 @@ async function render() {
     more.onclick = (ev) => {
       ev.stopPropagation();
       if (openMenu?.btn === more) closeMenu();
-      else showMenu(more, items);
+      // detail === 0 はキーボード（Enter/Space）での押下。その場合は先頭の項目にフォーカスを移す
+      else showMenu(more, items, ev.detail === 0);
     };
 
     const row = el(
