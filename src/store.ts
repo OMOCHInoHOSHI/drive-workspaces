@@ -15,7 +15,11 @@ interface LocalSchema {
   pageToken: string;
   lastSyncAt: number;
   lastError: string | null;
+  /** ポップアップ一覧の並び順（プロファイルごと） */
+  sortOrder: SortOrder;
 }
+
+export type SortOrder = "recent" | "name";
 
 interface SessionSchema {
   /** ローカル変更があり未アップロードのワークスペース */

@@ -247,14 +247,11 @@ export async function openWorkspace(wsId: string): Promise<void> {
   await touch(wsId);
 }
 
-/** 開いただけ（タブの変更なし）でも「最後に使った場所」を更新する */
+/** 開いただけ（タブの変更なし）でも「最後に使った場所」と時刻を更新する（最近使った順の並び替えに使う） */
 async function touch(wsId: string): Promise<void> {
   const cached = (await getWorkspaces())[wsId];
   if (!cached) return;
-  const me = await whoAmI();
-  const changed = (Object.keys(me) as (keyof typeof me)[]).some((k) => cached.doc[k] !== me[k]);
-  if (!changed) return;
-  const doc: WorkspaceDoc = { ...cached.doc, ...me, updatedAt: Date.now() };
+  const doc: WorkspaceDoc = { ...cached.doc, ...(await whoAmI()), updatedAt: Date.now() };
   const f = await drive.update(cached.fileId, doc);
   await putWorkspace({ ...cached, doc, modifiedTime: f.modifiedTime });
 }

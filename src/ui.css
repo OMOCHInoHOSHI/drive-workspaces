@@ -60,7 +60,9 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .popup { width: 340px; }
 .popup header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .popup header h1 { font-size: 14px; margin: 0; }
-.list { max-height: 380px; overflow-y: auto; }
+.listbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.listbar select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.list { max-height: 350px; overflow-y: auto; }
 /* 1行目: 名前などの情報 + 「開いています」、2行目: 操作ボタン（右寄せ） */
 .ws { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 8px; row-gap: 4px; padding: 8px 12px; cursor: pointer; }
 .ws:hover { background: var(--hover); }

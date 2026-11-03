@@ -1,9 +1,18 @@
 import { send } from "./messaging.js";
+import { getLocal, setLocal, type SortOrder } from "./store.js";
 import type { StatusResponse } from "./types.js";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 let currentWindowId = -1;
+let sortOrder: SortOrder = "name";
+
+type Item = StatusResponse["workspaces"][number];
+
+function sortWorkspaces(items: Item[]): Item[] {
+  const byName = (a: Item, b: Item) => a.name.localeCompare(b.name, "ja");
+  return [...items].sort(sortOrder === "recent" ? (a, b) => b.updatedAt - a.updatedAt || byName(a, b) : byName);
+}
 
 function fmtTime(ms: number | null): string {
   if (!ms) return "未同期";
@@ -80,7 +89,7 @@ async function render() {
   if (s.workspaces.length === 0) {
     list.append(el("div", { className: "empty", textContent: "ワークスペースはまだありません。" }));
   }
-  for (const w of s.workspaces) {
+  for (const w of sortWorkspaces(s.workspaces)) {
     const actions = el("div", { className: "actions" });
     const mk = (label: string, cls: string, fn: () => Promise<unknown>) => {
       const b = el("button", { textContent: label, className: cls });
@@ -155,7 +164,15 @@ $("sync").onclick = () =>
     }
   });
 
+$<HTMLSelectElement>("sort").onchange = () =>
+  void act(async () => {
+    sortOrder = $<HTMLSelectElement>("sort").value === "recent" ? "recent" : "name";
+    await setLocal("sortOrder", sortOrder);
+  });
+
 void (async () => {
   currentWindowId = (await chrome.windows.getCurrent()).id ?? -1;
+  sortOrder = (await getLocal("sortOrder")) ?? "name";
+  $<HTMLSelectElement>("sort").value = sortOrder;
   await render().catch(showError);
 })();
