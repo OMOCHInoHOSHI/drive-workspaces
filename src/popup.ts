@@ -62,8 +62,68 @@ async function act(fn: () => Promise<unknown>) {
   }
 }
 
+type MenuItem = { label: string; danger?: boolean; fn: () => Promise<unknown> };
+
+/** 開いている「⋯」メニュー。同時に開くのは1つだけ */
+let openMenu: { menu: HTMLElement; btn: HTMLElement } | null = null;
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.menu.remove();
+  openMenu.btn.classList.remove("open");
+  openMenu.btn.setAttribute("aria-expanded", "false");
+  openMenu = null;
+}
+
+/**
+ * ボタンの下にメニューを出す。リストのスクロール領域で切れないよう body 直下に fixed で置き、
+ * 下に収まらなければ上に開く。
+ */
+function showMenu(btn: HTMLElement, items: MenuItem[]) {
+  closeMenu();
+  const menu = el("div", { className: "menu" });
+  menu.setAttribute("role", "menu");
+  for (const it of items) {
+    const b = el("button", { textContent: it.label, className: it.danger ? "danger" : "", type: "button" });
+    b.setAttribute("role", "menuitem");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      void act(it.fn);
+    };
+    menu.append(b);
+  }
+  menu.onclick = (ev) => ev.stopPropagation();
+  document.body.append(menu);
+
+  const r = btn.getBoundingClientRect();
+  const { offsetWidth: mw, offsetHeight: mh } = menu;
+  const gap = 2;
+  const margin = 4;
+  let top = r.bottom + gap;
+  if (top + mh > window.innerHeight - margin) top = Math.max(margin, r.top - gap - mh);
+  menu.style.top = `${top}px`;
+  menu.style.left = `${Math.max(margin, r.right - mw)}px`;
+
+  btn.classList.add("open");
+  btn.setAttribute("aria-expanded", "true");
+  openMenu = { menu, btn };
+}
+
+document.addEventListener("click", closeMenu);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && openMenu) {
+    e.preventDefault();
+    const { btn } = openMenu;
+    closeMenu();
+    btn.focus();
+  }
+});
+$("list").addEventListener("scroll", closeMenu);
+
 async function render() {
   const s = await send<StatusResponse>({ type: "status" });
+  closeMenu();
   const notice = $("notice");
   notice.replaceChildren();
 
@@ -90,28 +150,37 @@ async function render() {
     list.append(el("div", { className: "empty", textContent: "ワークスペースはまだありません。" }));
   }
   for (const w of sortWorkspaces(s.workspaces)) {
-    const actions = el("div", { className: "actions" });
-    const mk = (label: string, cls: string, fn: () => Promise<unknown>) => {
-      const b = el("button", { textContent: label, className: cls });
-      b.onclick = (ev) => {
-        ev.stopPropagation();
-        void act(fn);
-      };
-      actions.append(b);
-    };
-    mk("名前変更", "", async () => {
-      const name = prompt("新しい名前", w.name);
-      if (name) await send({ type: "rename", wsId: w.id, name });
-    });
-    if (w.openWindowId !== null) mk("閉じる", "", () => send({ type: "close", wsId: w.id }));
+    const items: MenuItem[] = [
+      {
+        label: "名前変更",
+        fn: async () => {
+          const name = prompt("新しい名前", w.name);
+          if (name) await send({ type: "rename", wsId: w.id, name });
+        },
+      },
+    ];
+    if (w.openWindowId !== null) items.push({ label: "閉じる", fn: () => send({ type: "close", wsId: w.id }) });
     if (w.openWindowId !== null && w.openWindowId === currentWindowId) {
-      mk("関連付け解除", "", () => send({ type: "detach", windowId: currentWindowId }));
+      items.push({ label: "関連付け解除", fn: () => send({ type: "detach", windowId: currentWindowId }) });
     }
-    mk("削除", "danger", async () => {
-      if (confirm(`「${w.name}」を削除しますか？\n全端末から消えます（開いているウィンドウ自体は閉じません）。`)) {
-        await send({ type: "delete", wsId: w.id });
-      }
+    items.push({
+      label: "削除",
+      danger: true,
+      fn: async () => {
+        if (confirm(`「${w.name}」を削除しますか？\n全端末から消えます（開いているウィンドウ自体は閉じません）。`)) {
+          await send({ type: "delete", wsId: w.id });
+        }
+      },
     });
+
+    const more = el("button", { className: "more", textContent: "⋯", title: "操作", type: "button" });
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.onclick = (ev) => {
+      ev.stopPropagation();
+      if (openMenu?.btn === more) closeMenu();
+      else showMenu(more, items);
+    };
 
     const row = el(
       "div",
@@ -133,7 +202,7 @@ async function render() {
             ),
           ]
         : []),
-      actions,
+      more,
     );
     row.onclick = () => {
       if (!confirmIfElsewhere(w, s.current)) return;
