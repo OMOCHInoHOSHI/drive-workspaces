@@ -85,10 +85,13 @@ export async function applyToWindow(windowId: number, doc: Pick<WorkspaceDoc, "t
   const pool = current.filter((t) => t.id !== undefined && isSyncable(urlOf(t)));
 
   // 1. URL一致で既存タブを割り当て、足りない分は作成
+  // 同一 URL が複数あるときはピン留め状態も一致しているタブを優先する
+  //（URL先頭からの割り当てだとピン留め↔通常の付け替え・移動が発生するため）
   const used = new Set<number>();
   const ids: number[] = [];
   for (const d of desired) {
-    const m = pool.find((t) => !used.has(t.id!) && urlOf(t) === d.url);
+    const urlMatch = (t: chrome.tabs.Tab) => !used.has(t.id!) && urlOf(t) === d.url;
+    const m = pool.find((t) => urlMatch(t) && !!t.pinned === d.pinned) ?? pool.find(urlMatch);
     if (m) {
       used.add(m.id!);
       ids.push(m.id!);
