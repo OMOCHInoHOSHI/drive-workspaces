@@ -50,12 +50,13 @@ async function windowExists(windowId: number): Promise<boolean> {
 }
 
 /** この端末・ブラウザの識別情報。ワークスペースを書き込むたびに「最後に使った場所」として記録する */
-export async function whoAmI(): Promise<Pick<WorkspaceDoc, "updatedBy" | "deviceName" | "browser">> {
+export async function whoAmI(): Promise<Pick<WorkspaceDoc, "updatedBy" | "deviceName" | "browser" | "profileName">> {
   const s = await getLocal("settings");
   return {
     updatedBy: await getDeviceId(),
     deviceName: s?.deviceName || "不明な端末",
     browser: s?.browserName || detectBrowser(),
+    profileName: s?.profileName || "",
   };
 }
 

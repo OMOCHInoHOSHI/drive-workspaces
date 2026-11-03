@@ -11,9 +11,9 @@ function fmtTime(ms: number | null): string {
   return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-/** 「自宅PC / Edge」のような最後に使った場所の表示 */
+/** 「自宅PC / Edge / ittama」のような最後に使った場所の表示 */
 function placeLabel(w: StatusResponse["workspaces"][number]): string {
-  return [w.deviceName, w.browser ?? "ブラウザ不明"].filter(Boolean).join(" / ");
+  return [w.deviceName, w.browser ?? "ブラウザ不明", w.profileName].filter(Boolean).join(" / ");
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {

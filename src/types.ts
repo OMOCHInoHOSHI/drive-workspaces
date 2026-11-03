@@ -9,6 +9,8 @@ export interface WorkspaceDoc {
   deviceName: string;
   /** 最後に使ったブラウザ（"Edge" "Chrome" など）。この項目の追加前に作られたデータには無い */
   browser?: string;
+  /** 最後に使ったブラウザのプロファイル名（設定画面で手入力したもの） */
+  profileName?: string;
   tabs: TabState[];
   groups: GroupState[];
 }
@@ -46,6 +48,8 @@ export interface Settings {
   deviceName: string;
   /** ブラウザ名の手動指定。空なら自動判定 */
   browserName?: string;
+  /** ブラウザのプロファイル名（例: ittama、ユーザー1）。拡張機能からは取得できないため手入力 */
+  profileName?: string;
 }
 
 export interface AuthState {
@@ -77,6 +81,7 @@ export interface StatusResponse {
     updatedAt: number;
     deviceName: string;
     browser: string | null;
+    profileName: string | null;
     openWindowId: number | null;
   }[];
 }

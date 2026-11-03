@@ -22,6 +22,9 @@
       <label for="browserName">ブラウザ名（空欄なら自動判定）</label>
       <input type="text" id="browserName" />
       <p class="muted">Vivaldi など自動判定できないブラウザは「Chromium」と表示されます。その場合はここに入力してください。</p>
+      <label for="profileName">このブラウザのプロファイル名</label>
+      <input type="text" id="profileName" placeholder="例: ittama、ユーザー1" />
+      <p class="muted">プロファイル名は拡張機能から取得できないため、右上のプロフィールアイコンに表示される名前を入力してください。設定はプロファイルごとに別々に保存されます。</p>
       <div class="row"><button class="primary" id="save">保存</button> <span id="saved" class="muted"></span></div>
     </section>
 

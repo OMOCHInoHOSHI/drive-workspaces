@@ -138,6 +138,7 @@ async function status(): Promise<StatusResponse> {
         updatedAt: w.doc.updatedAt,
         deviceName: w.doc.deviceName,
         browser: w.doc.browser ?? null,
+        profileName: w.doc.profileName || null,
         openWindowId: winOf.get(w.doc.id) ?? null,
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "ja")),

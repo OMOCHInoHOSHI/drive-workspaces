@@ -21,6 +21,7 @@ async function init() {
   input("deviceName").value = s?.deviceName ?? "";
   input("browserName").value = s?.browserName ?? "";
   input("browserName").placeholder = `自動判定: ${detectBrowser()}`;
+  input("profileName").value = s?.profileName ?? "";
   await refreshAuthState();
 }
 
@@ -30,6 +31,7 @@ async function saveSettings() {
     clientSecret: input("clientSecret").value.trim(),
     deviceName: input("deviceName").value.trim(),
     browserName: input("browserName").value.trim(),
+    profileName: input("profileName").value.trim(),
   });
 }
 
