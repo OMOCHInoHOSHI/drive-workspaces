@@ -5,6 +5,17 @@ import type { AuthState, CachedWorkspace, Settings } from "./types.js";
  * MV3 のサービスワーカーは30秒の無操作で停止されるため、状態はメモリではなく必ずここに置く。
  */
 
+// ---- 排他制御（read-modify-write を直列に実行する） ----
+// withLock（sync 側）とは別に、storage への読み書きを短時間で直列化する。
+// タブイベント由来の markDirty が takeDirty の読み書きの合間に割り込むと
+// dirty フラグが消えるため、ストレージ操作単位で順序を保証する。
+let storageQueue: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const p = storageQueue.then(fn, fn);
+  storageQueue = p.catch(() => undefined);
+  return p;
+}
+
 interface LocalSchema {
   settings: Settings;
   auth: AuthState;
@@ -49,12 +60,14 @@ export async function setSession<K extends keyof SessionSchema>(key: K, value: S
 }
 
 export async function getDeviceId(): Promise<string> {
-  let id = await getLocal("deviceId");
-  if (!id) {
-    id = crypto.randomUUID();
-    await setLocal("deviceId", id);
-  }
-  return id;
+  return serialize(async () => {
+    let id = await getLocal("deviceId");
+    if (!id) {
+      id = crypto.randomUUID();
+      await setLocal("deviceId", id);
+    }
+    return id;
+  });
 }
 
 export async function getWorkspaces(): Promise<Record<string, CachedWorkspace>> {
@@ -62,15 +75,19 @@ export async function getWorkspaces(): Promise<Record<string, CachedWorkspace>> 
 }
 
 export async function putWorkspace(ws: CachedWorkspace): Promise<void> {
-  const all = await getWorkspaces();
-  all[ws.doc.id] = ws;
-  await setLocal("workspaces", all);
+  await serialize(async () => {
+    const all = await getWorkspaces();
+    all[ws.doc.id] = ws;
+    await setLocal("workspaces", all);
+  });
 }
 
 export async function deleteWorkspaceCache(wsId: string): Promise<void> {
-  const all = await getWorkspaces();
-  delete all[wsId];
-  await setLocal("workspaces", all);
+  await serialize(async () => {
+    const all = await getWorkspaces();
+    delete all[wsId];
+    await setLocal("workspaces", all);
+  });
 }
 
 export async function getWindowMap(): Promise<Record<string, string>> {
@@ -78,23 +95,29 @@ export async function getWindowMap(): Promise<Record<string, string>> {
 }
 
 export async function mapWindow(windowId: number, wsId: string): Promise<void> {
-  const map = await getWindowMap();
-  // 1ワークスペース = 1ウィンドウ。古い対応は消す
-  for (const [w, id] of Object.entries(map)) if (id === wsId) delete map[w];
-  map[String(windowId)] = wsId;
-  await setLocal("windowMap", map);
+  await serialize(async () => {
+    const map = await getWindowMap();
+    // 1ワークスペース = 1ウィンドウ。古い対応は消す
+    for (const [w, id] of Object.entries(map)) if (id === wsId) delete map[w];
+    map[String(windowId)] = wsId;
+    await setLocal("windowMap", map);
+  });
 }
 
 export async function unmapWindow(windowId: number): Promise<void> {
-  const map = await getWindowMap();
-  delete map[String(windowId)];
-  await setLocal("windowMap", map);
+  await serialize(async () => {
+    const map = await getWindowMap();
+    delete map[String(windowId)];
+    await setLocal("windowMap", map);
+  });
 }
 
 export async function unmapWorkspace(wsId: string): Promise<void> {
-  const map = await getWindowMap();
-  for (const [w, id] of Object.entries(map)) if (id === wsId) delete map[w];
-  await setLocal("windowMap", map);
+  await serialize(async () => {
+    const map = await getWindowMap();
+    for (const [w, id] of Object.entries(map)) if (id === wsId) delete map[w];
+    await setLocal("windowMap", map);
+  });
 }
 
 export async function windowOf(wsId: string): Promise<number | null> {
@@ -104,19 +127,25 @@ export async function windowOf(wsId: string): Promise<number | null> {
 }
 
 export async function markDirty(wsId: string): Promise<void> {
-  const d = (await getSession("dirty")) ?? {};
-  d[wsId] = true;
-  await setSession("dirty", d);
+  await serialize(async () => {
+    const d = (await getSession("dirty")) ?? {};
+    d[wsId] = true;
+    await setSession("dirty", d);
+  });
 }
 
 export async function takeDirty(): Promise<string[]> {
-  const d = (await getSession("dirty")) ?? {};
-  await setSession("dirty", {});
-  return Object.keys(d);
+  return serialize(async () => {
+    const d = (await getSession("dirty")) ?? {};
+    await setSession("dirty", {});
+    return Object.keys(d);
+  });
 }
 
 export async function clearDirty(wsId: string): Promise<void> {
-  const d = (await getSession("dirty")) ?? {};
-  delete d[wsId];
-  await setSession("dirty", d);
+  await serialize(async () => {
+    const d = (await getSession("dirty")) ?? {};
+    delete d[wsId];
+    await setSession("dirty", d);
+  });
 }
