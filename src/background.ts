@@ -133,18 +133,17 @@ async function status(): Promise<StatusResponse> {
     lastSyncAt: lastSyncAt ?? null,
     lastError: lastError ?? null,
     current: { deviceName: me.deviceName, browser: me.browser ?? "", profileName: me.profileName ?? "" },
-    workspaces: Object.values(all)
-      .map((w) => ({
-        id: w.doc.id,
-        name: w.doc.name,
-        tabCount: w.doc.tabs.length,
-        updatedAt: w.doc.updatedAt,
-        deviceName: w.doc.deviceName,
-        browser: w.doc.browser ?? null,
-        profileName: w.doc.profileName || null,
-        openWindowId: winOf.get(w.doc.id) ?? null,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name, "ja")),
+    // 並び順は表示側（popup）が持つ
+    workspaces: Object.values(all).map((w) => ({
+      id: w.doc.id,
+      name: w.doc.name,
+      tabCount: w.doc.tabs.length,
+      updatedAt: w.doc.updatedAt,
+      deviceName: w.doc.deviceName,
+      browser: w.doc.browser ?? null,
+      profileName: w.doc.profileName || null,
+      openWindowId: winOf.get(w.doc.id) ?? null,
+    })),
   };
 }
 
