@@ -48,6 +48,26 @@ function isApplying(windowId: number): boolean {
 /** 適用ガード中に来た撮影依頼（windowId → wsId） */
 const recaptureAfterApply = new Map<number, string>();
 
+/**
+ * ウィンドウごとの進行中のタブイベント処理・撮影。リモート適用はこれが空になるのを待ってからガードを立てる
+ *（ガード直前に始まった撮影が捨てられ、その操作を適用で消してしまうのを防ぐため）
+ */
+const inFlight = new Map<number, Set<Promise<unknown>>>();
+
+/** タブイベント処理を登録する。イベントを受けたその場で（await の前に）呼ぶこと */
+export function trackWindowWork<T>(windowId: number, p: Promise<T>): Promise<T> {
+  let set = inFlight.get(windowId);
+  if (!set) inFlight.set(windowId, (set = new Set()));
+  const s = set;
+  s.add(p);
+  const done = () => {
+    s.delete(p);
+    if (s.size === 0 && inFlight.get(windowId) === s) inFlight.delete(windowId);
+  };
+  p.then(done, done);
+  return p;
+}
+
 async function windowExists(windowId: number): Promise<boolean> {
   try {
     await chrome.windows.get(windowId);
@@ -68,27 +88,57 @@ export async function whoAmI(): Promise<Pick<WorkspaceDoc, "updatedBy" | "device
   };
 }
 
-async function withApplyGuard<T>(windowId: number, fn: () => Promise<T>): Promise<T> {
+/**
+ * 適用ガードを立てて fn を実行する。fn はウィンドウに実際に適用したら true を返す。
+ * 適用したときは、それで発生したタブイベントが届き切るのを待つため 1.5 秒後に解除し、適用しなかったときはすぐ解除する
+ */
+async function withApplyGuard(windowId: number, fn: () => Promise<boolean>): Promise<void> {
   applying.set(windowId, (applying.get(windowId) ?? 0) + 1);
+  let applied = true; // 途中で失敗したときは、適用が途中まで進んでいるかもしれないので待つ側に倒す
   try {
-    return await fn();
+    applied = await fn();
   } finally {
-    // 適用で発生したタブイベントが届き切るのを少し待ってから解除
-    setTimeout(() => {
-      const n = (applying.get(windowId) ?? 1) - 1;
-      if (n > 0) {
-        applying.set(windowId, n);
-        return;
-      }
-      applying.delete(windowId);
-      // ガード中のユーザー操作を取りこぼさないよう撮り直す（適用しただけなら同期済みと同じなので積まれない）
-      const wsId = recaptureAfterApply.get(windowId);
-      if (wsId !== undefined) {
-        recaptureAfterApply.delete(windowId);
-        void captureToOutbox(windowId, wsId);
-      }
-    }, 1500);
+    if (applied) setTimeout(() => releaseApplyGuard(windowId), 1500);
+    else releaseApplyGuard(windowId);
   }
+}
+
+function releaseApplyGuard(windowId: number): void {
+  const n = (applying.get(windowId) ?? 1) - 1;
+  if (n > 0) {
+    applying.set(windowId, n);
+    return;
+  }
+  applying.delete(windowId);
+  // ガード中のユーザー操作を取りこぼさないよう撮り直す（適用しただけなら同期済みと同じなので積まれない）
+  const wsId = recaptureAfterApply.get(windowId);
+  if (wsId !== undefined) {
+    recaptureAfterApply.delete(windowId);
+    void captureToOutbox(windowId, wsId);
+  }
+}
+
+const IDLE_WAIT_MAX_MS = 3000;
+
+/**
+ * 進行中のタブイベント処理・撮影が終わるのを待ってから、await を挟まずにガードを立てる。
+ * 操作が続いて待ちが終わらないと同期全体（withLock）が止まるので、最大 IDLE_WAIT_MAX_MS で打ち切る。
+ * 打ち切っても、ガード中の撮影は捨てて解除後に撮り直し、ガード内で未送信を確認するので、上書きは起きない
+ *（その場合に失われうるのは、打ち切り時点で撮影途中だった操作だけ）
+ */
+async function withApplyGuardWhenIdle(windowId: number, fn: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + IDLE_WAIT_MAX_MS;
+  for (let set = inFlight.get(windowId); set?.size; set = inFlight.get(windowId)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...set]),
+      new Promise<void>((r) => (timer = setTimeout(r, remaining))),
+    ]);
+    clearTimeout(timer);
+  }
+  return withApplyGuard(windowId, fn);
 }
 
 // ---- ローカル → Drive ----
@@ -127,7 +177,7 @@ export function captureToOutbox(windowId: number, wsId: string): Promise<void> {
       if (captureRuns.get(windowId) === run) captureRuns.delete(windowId);
     });
   captureRuns.set(windowId, run);
-  return run;
+  return trackWindowWork(windowId, run);
 }
 
 /** 撮影結果を捨てるべきか。適用ガード中なら解除後に撮り直すよう予約する */
@@ -203,21 +253,32 @@ async function applyRemote(doc: WorkspaceDoc, file: drive.DriveFile): Promise<vo
   if (cached && Date.parse(cached.modifiedTime) >= Date.parse(file.modifiedTime)) return; // 手元の方が新しい or 同じ
 
   const h = hashOf(doc);
-  // 未送信の手元の変更があっても、名前などはリモートの値を採る（次の送信で手元のタブとともに書き戻す）
-  await putWorkspace({ doc, fileId: file.id, modifiedTime: file.modifiedTime, syncedHash: h });
+
+  /** キャッシュを更新する。未送信の手元の変更があっても、名前などはリモートの値を採る（次の送信で手元のタブとともに書き戻す） */
+  const store = async () => {
+    // 同期済みの状態に戻っただけの未送信は、syncedHash を書き換える前に捨てる
+    //（残すと「リモートと違う手元の変更」に化けて、リモートの最新を古い状態で上書きしてしまう）
+    const cur = (await getWorkspaces())[doc.id];
+    const pending = await getOutboxEntry(doc.id);
+    if (pending && cur && !needsUpload(pending, cur)) await removeOutboxIf(doc.id, pending);
+    await putWorkspace({ doc, fileId: file.id, modifiedTime: file.modifiedTime, syncedHash: h });
+  };
 
   const winId = await windowOf(doc.id);
-  if (winId === null) return;
-  if (!(await windowExists(winId))) {
-    await unmapWindow(winId);
+  const live = winId !== null && (await windowExists(winId));
+  if (winId !== null && !live) await unmapWindow(winId);
+  if (winId === null || !live) {
+    await store();
     return;
   }
-  // ガードを先に立ててから未送信を確認する。撮影側は outbox への書き込みと同じ直列化の中でガードを見るので、
-  // 「未送信なしと判定した後に古い状態が積まれる」入れ違いが起きない
-  await withApplyGuard(winId, async () => {
-    if (await getOutboxEntry(doc.id)) return; // 未送信の手元の変更があれば、タブは手元を優先する
-    const now = hashOf(await capture(winId));
-    if (now !== h) await applyToWindow(winId, doc, false);
+  // 進行中の撮影が outbox に積み終わるのを待ってからガードを立て、ガードの中で未送信を確認する。
+  // ガード中の撮影は捨てられて解除後に撮り直されるので、確認と適用の間に古い状態が積まれる入れ違いが起きない
+  await withApplyGuardWhenIdle(winId, async () => {
+    await store();
+    if (await getOutboxEntry(doc.id)) return false; // 未送信の手元の変更があれば、タブは手元を優先する
+    if (hashOf(await capture(winId)) === h) return false;
+    await applyToWindow(winId, doc, false);
+    return true;
   });
 }
 
@@ -351,6 +412,7 @@ export async function openWorkspace(wsId: string): Promise<void> {
   await withApplyGuard(winId, async () => {
     await mapWindow(winId, wsId);
     await applyToWindow(winId, doc, true);
+    return true;
   });
   // 未送信があるときは、古いタブのまま Drive に書かないよう touch しない（後の送信で時刻も更新される）
   if (!pending) await touch(wsId);
@@ -409,6 +471,7 @@ export async function rematchWindows(): Promise<void> {
   const mappedWs = new Set(Object.values(map));
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const all = Object.values(await getWorkspaces());
+  const box = await getOutbox();
   const candidates: { win: number; ws: CachedWorkspace; score: number }[] = [];
 
   for (const w of windows) {
@@ -416,7 +479,9 @@ export async function rematchWindows(): Promise<void> {
     const urls = (w.tabs ?? []).map(urlOf).filter(isSyncable);
     for (const ws of all) {
       if (mappedWs.has(ws.doc.id)) continue;
-      const score = similarity(urls, ws.doc.tabs.map((t) => t.url));
+      // 未送信があればそちらが最後の状態（送信前に再起動した場合など）
+      const tabs = box[ws.doc.id]?.tabs ?? ws.doc.tabs;
+      const score = similarity(urls, tabs.map((t) => t.url));
       if (score >= 0.5) candidates.push({ win: w.id, ws, score });
     }
   }

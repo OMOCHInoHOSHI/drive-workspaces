@@ -1,6 +1,6 @@
 import { AuthRequiredError, isSignedIn } from "./auth.js";
 import { debounceWithMaxWait } from "./outbox.js";
-import { getLocal, getWindowMap, getWorkspaces, setLocal, unmapWindow } from "./store.js";
+import { getLocal, getOutbox, getWindowMap, getWorkspaces, setLocal, unmapWindow } from "./store.js";
 import {
   captureToOutbox,
   closeWorkspace,
@@ -12,6 +12,7 @@ import {
   rematchWindows,
   renameWorkspace,
   syncAll,
+  trackWindowWork,
   whoAmI,
   withLock,
 } from "./sync.js";
@@ -54,8 +55,16 @@ async function ensureAlarm(): Promise<void> {
 // サービスワーカーが止まってタイマーが消えても、outbox は storage に残っているので定期アラームで送られる
 onEnqueued(debounceWithMaxWait(() => void runSync(), DEBOUNCE_MS, MAX_WAIT_MS));
 
-async function onWindowChanged(windowId: number | undefined): Promise<void> {
-  if (windowId === undefined || windowId < 0) return;
+/**
+ * タブイベントを受けたその場で（await の前に）処理中として登録する。
+ * リモート適用はこれが終わるのを待つので、適用直前の操作が適用で消されない
+ */
+function onWindowChanged(windowId: number | undefined): Promise<void> {
+  if (windowId === undefined || windowId < 0) return Promise.resolve();
+  return trackWindowWork(windowId, handleWindowChanged(windowId));
+}
+
+async function handleWindowChanged(windowId: number): Promise<void> {
   const wsId = (await getWindowMap())[String(windowId)];
   if (!wsId) return;
   // ウィンドウが生きているうちに撮影しておく（×で閉じられた後は読めないため）。
@@ -124,13 +133,14 @@ chrome.runtime.onInstalled.addListener(() => {
 // ---- popup / options からのメッセージ ----
 
 async function status(): Promise<StatusResponse> {
-  const [all, map, signedIn, settings, lastSyncAt, lastError] = await Promise.all([
+  const [all, map, signedIn, settings, lastSyncAt, lastError, box] = await Promise.all([
     getWorkspaces(),
     getWindowMap(),
     isSignedIn(),
     getLocal("settings"),
     getLocal("lastSyncAt"),
     getLocal("lastError"),
+    getOutbox(),
   ]);
   const me = await whoAmI();
   const alive = new Set((await chrome.windows.getAll()).map((w) => w.id));
@@ -146,7 +156,8 @@ async function status(): Promise<StatusResponse> {
     workspaces: Object.values(all).map((w) => ({
       id: w.doc.id,
       name: w.doc.name,
-      tabCount: w.doc.tabs.length,
+      // 未送信があればそちらが最新のタブ数
+      tabCount: (box[w.doc.id]?.tabs ?? w.doc.tabs).length,
       updatedAt: w.doc.updatedAt,
       deviceName: w.doc.deviceName,
       browser: w.doc.browser ?? null,
