@@ -72,7 +72,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .ws .actions { flex: 1 0 100%; display: flex; justify-content: flex-end; gap: 4px; visibility: hidden; }
 .ws:hover .actions, .ws:focus-within .actions { visibility: visible; }
 .ws .actions button { padding: 1px 6px; font-size: 11px; white-space: nowrap; }
-.footer { border-top: 1px solid var(--line); padding: 10px 12px; display: grid; gap: 8px; }
+.controls { border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; gap: 8px; }
 .row { display: flex; gap: 6px; }
 .row input { flex: 1; min-width: 0; }
 .row button { flex: none; white-space: nowrap; }
