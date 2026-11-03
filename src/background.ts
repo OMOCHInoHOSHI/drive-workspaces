@@ -10,6 +10,7 @@ import {
   rematchWindows,
   renameWorkspace,
   syncAll,
+  whoAmI,
   withLock,
 } from "./sync.js";
 import type { Request, Response, StatusResponse } from "./types.js";
@@ -122,6 +123,7 @@ async function status(): Promise<StatusResponse> {
     getLocal("lastSyncAt"),
     getLocal("lastError"),
   ]);
+  const me = await whoAmI();
   const alive = new Set((await chrome.windows.getAll()).map((w) => w.id));
   const winOf = new Map<string, number>();
   for (const [w, id] of Object.entries(map)) if (alive.has(Number(w))) winOf.set(id, Number(w));
@@ -130,6 +132,7 @@ async function status(): Promise<StatusResponse> {
     configured: !!settings?.clientId && !!settings?.clientSecret,
     lastSyncAt: lastSyncAt ?? null,
     lastError: lastError ?? null,
+    current: { deviceName: me.deviceName, browser: me.browser ?? "", profileName: me.profileName ?? "" },
     workspaces: Object.values(all)
       .map((w) => ({
         id: w.doc.id,

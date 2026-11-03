@@ -16,6 +16,24 @@ function placeLabel(w: StatusResponse["workspaces"][number]): string {
   return [w.deviceName, w.browser ?? "ブラウザ不明", w.profileName].filter(Boolean).join(" / ");
 }
 
+/**
+ * 最後に別のブラウザ・プロファイルで使われていたワークスペースを開くときは確認する。
+ * このウィンドウで既に開いている場合（フォーカスするだけ）と、記録の無い古いデータは確認しない。
+ */
+function confirmIfElsewhere(w: StatusResponse["workspaces"][number], current: StatusResponse["current"]): boolean {
+  if (w.openWindowId !== null || w.browser === null) return true;
+  const sameBrowser = w.browser === current.browser;
+  const sameProfile = (w.profileName ?? "") === current.profileName;
+  if (sameBrowser && sameProfile) return true;
+  const here = [current.deviceName, current.browser, current.profileName].filter(Boolean).join(" / ");
+  return confirm(
+    `「${w.name}」は最後に別の場所で使われていました。\n\n` +
+      `最後に使った場所: ${placeLabel(w)}\n` +
+      `今のブラウザ: ${here}\n\n` +
+      `このブラウザで開きますか？`,
+  );
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {
   const e = Object.assign(document.createElement(tag), props);
   e.append(...children);
@@ -99,7 +117,10 @@ async function render() {
       ...(w.openWindowId !== null ? [el("span", { className: "chip", textContent: "開いています" })] : []),
       actions,
     );
-    row.onclick = () => void act(() => send({ type: "open", wsId: w.id }));
+    row.onclick = () => {
+      if (!confirmIfElsewhere(w, s.current)) return;
+      void act(() => send({ type: "open", wsId: w.id }));
+    };
     list.append(row);
   }
 

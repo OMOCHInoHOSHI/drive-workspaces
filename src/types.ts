@@ -74,6 +74,8 @@ export interface StatusResponse {
   configured: boolean;
   lastSyncAt: number | null;
   lastError: string | null;
+  /** このブラウザ・プロファイル自身の情報（別の場所で使っていたワークスペースを開くときの確認に使う） */
+  current: { deviceName: string; browser: string; profileName: string };
   workspaces: {
     id: string;
     name: string;
