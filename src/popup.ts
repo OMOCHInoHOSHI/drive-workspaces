@@ -64,7 +64,7 @@ async function act(fn: () => Promise<unknown>) {
 
 /** 手元と Drive の内容が違うワークスペースについて、どちらを残すか選んでもらう */
 function conflictNotice(w: Item): HTMLElement {
-  const here = w.openWindowId !== null ? "この窓" : "この端末";
+  const here = w.openWindowId !== null ? "このウィンドウ" : "この端末";
   const choice = (keep: "remote" | "local", label: string, warning: string) => {
     const b = el("button", { textContent: label, type: "button" });
     b.onclick = () => {

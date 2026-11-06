@@ -242,7 +242,17 @@ async function refreshBadge(): Promise<void> {
   await chrome.action.setBadgeText({ text: attention ? "!" : "" });
 }
 
-async function uploadEntry(wsId: string, entry: OutboxEntry): Promise<void> {
+/** Drive へ書く前に呼ぶ。手元が知っている版より新しければ取り込んで true を返す */
+async function pullIfNewer(ws: CachedWorkspace): Promise<boolean> {
+  if (!ws.fileId) return false;
+  const meta = await drive.getMeta(ws.fileId);
+  if (Date.parse(meta.modifiedTime) <= Date.parse(ws.modifiedTime)) return false;
+  await applyRemote(await drive.download(ws.fileId), meta);
+  return true;
+}
+
+/** checked: 送信前の確認が済んでいる（確認で取り込んだ後の判定し直しでは、もう一度確認しない） */
+async function uploadEntry(wsId: string, entry: OutboxEntry, checked = false): Promise<void> {
   if (!sameEntry(await getOutboxEntry(wsId), entry)) return; // 取り込みで捨てられた、または新しい状態が積まれた
   const cached = (await getWorkspaces())[wsId];
   // 削除済み、または同期済みの状態に戻っていれば送らずに破棄
@@ -253,14 +263,8 @@ async function uploadEntry(wsId: string, entry: OutboxEntry): Promise<void> {
     return;
   }
   if ((await getConflicts())[wsId]) return; // ユーザーの選択を待つ
-  if (cached.fileId) {
-    // 上書きする前に、手元が知っている版から更新されていないか確かめる（新しければ取り込んで判定し直す）
-    const meta = await drive.getMeta(cached.fileId);
-    if (Date.parse(meta.modifiedTime) > Date.parse(cached.modifiedTime)) {
-      await applyRemote(await drive.download(cached.fileId), meta);
-      return uploadEntry(wsId, entry);
-    }
-  }
+  // 上書きする前に、手元が知っている版から更新されていないか確かめる（新しければ取り込んで判定し直す）
+  if (!checked && (await pullIfNewer(cached))) return uploadEntry(wsId, entry, true);
   const doc: WorkspaceDoc = {
     ...cached.doc,
     tabs: entry.tabs,
@@ -498,6 +502,8 @@ export async function openWorkspace(wsId: string): Promise<void> {
 
 /** 開いただけ（タブの変更なし）でも「最後に使った場所」と時刻を更新する（最近使った順の並び替えに使う） */
 async function touch(wsId: string): Promise<void> {
+  const before = (await getWorkspaces())[wsId];
+  if (before) await pullIfNewer(before);
   const cached = (await getWorkspaces())[wsId];
   if (!cached) return;
   const doc: WorkspaceDoc = { ...cached.doc, ...(await whoAmI()), updatedAt: Date.now() };
@@ -523,6 +529,8 @@ export async function closeWorkspace(wsId: string): Promise<void> {
 
 export async function renameWorkspace(wsId: string, name: string): Promise<void> {
   await captureAndFlush(wsId);
+  const before = (await getWorkspaces())[wsId];
+  if (before) await pullIfNewer(before); // 古いタブのまま書いて、別の端末の更新を消さないように
   const cached = (await getWorkspaces())[wsId];
   if (!cached) throw new Error("ワークスペースが見つかりません");
   const doc: WorkspaceDoc = {
@@ -651,8 +659,14 @@ async function bindWindow(windowId: number, tabs: chrome.tabs.Tab[], ws: CachedW
     const r = restoreAliases(await getStaleAliases(), wsId, infos, Date.now());
     await commitRestoredAliases(r.restored, r.rest);
     await mapWindow(windowId, wsId);
-    await refreshAnchor(windowId, wsId, ws.doc.name);
-    return reconcileContent(windowId, wsId, trustBase);
+    try {
+      await refreshAnchor(windowId, wsId, ws.doc.name);
+      return await reconcileContent(windowId, wsId, trustBase);
+    } catch (e) {
+      // 判定を終えていないウィンドウは結び付けたままにしない（途中の内容が Drive へ送られないように）。次の見直しでやり直す
+      await unmapWindow(windowId);
+      throw e;
+    }
   });
   // 手元の変更や確認待ちの内容を積む（Drive の内容を反映した直後は同期済みと同じなので積まれない）
   await captureToOutbox(windowId, wsId);
