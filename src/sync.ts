@@ -3,7 +3,7 @@ import * as drive from "./drive.js";
 import { newAlias, restoreAliases } from "./alias.js";
 import { anchorUrl, anchorWsId } from "./anchor.js";
 import { closeWindowWithAnchor, ensureAnchor, removeAnchors } from "./anchorTab.js";
-import { conflictsWithRemote } from "./conflict.js";
+import { conflictsWithRemote, decideOnBind } from "./conflict.js";
 import { needsUpload, type OutboxEntry, sameEntry, shouldEnqueue } from "./outbox.js";
 import { applyToWindow, capture, hashOf, isSyncable, sortedTabs, urlOf } from "./snapshot.js";
 import {
@@ -17,6 +17,7 @@ import {
   getOutbox,
   getOutboxEntry,
   getStaleAliases,
+  getWindowBases,
   getWindowMap,
   getWorkspaces,
   mapWindow,
@@ -27,7 +28,9 @@ import {
   removeOutbox,
   removeAliasesOfWorkspace,
   removeOutboxIf,
+  removeWindowBase,
   setLocal,
+  setWindowBase,
   unmapWindow,
   unmapWorkspace,
   windowOf,
@@ -246,6 +249,7 @@ async function uploadEntry(wsId: string, entry: OutboxEntry): Promise<void> {
   if (!cached || !needsUpload(entry, cached)) {
     await removeOutboxIf(wsId, entry);
     await clearConflict(wsId);
+    if (cached) await setWindowBase(wsId, entry.hash);
     return;
   }
   if ((await getConflicts())[wsId]) return; // ユーザーの選択を待つ
@@ -266,6 +270,7 @@ async function uploadEntry(wsId: string, entry: OutboxEntry): Promise<void> {
   };
   const f = cached.fileId ? await drive.update(cached.fileId, doc) : await drive.create(doc);
   await putWorkspace({ doc, fileId: f.id, modifiedTime: f.modifiedTime, syncedHash: entry.hash });
+  await setWindowBase(wsId, entry.hash);
   await removeOutboxIf(wsId, entry);
 }
 
@@ -324,9 +329,10 @@ async function applyRemote(doc: WorkspaceDoc, file: drive.DriveFile): Promise<vo
     // 未送信の手元の変更や、確認待ちの競合があれば、タブは変えない
     if ((await getOutboxEntry(doc.id)) || (await getConflicts())[doc.id]) return false;
     const aliases = await getAliases();
-    if (hashOf(await capture(winId, aliases)) === h) return false;
-    await applyToWindow(winId, doc, false, aliases, aliasRecorder(doc.id));
-    return true;
+    const same = hashOf(await capture(winId, aliases)) === h;
+    if (!same) await applyToWindow(winId, doc, false, aliases, aliasRecorder(doc.id));
+    await setWindowBase(doc.id, h);
+    return !same;
   });
   await refreshAnchor(winId, doc.id, doc.name); // 名前の変更や、適用で崩れた先頭の位置を直す
 }
@@ -340,6 +346,7 @@ async function handleRemoteDelete(fileId: string): Promise<void> {
   await unmapWorkspace(hit.doc.id);
   await removeAliasesOfWorkspace(hit.doc.id);
   await deleteWorkspaceCache(hit.doc.id);
+  await removeWindowBase(hit.doc.id);
   await clearConflict(hit.doc.id);
   await refreshBadge();
   if (winId !== null && (await windowExists(winId))) await removeAnchors(winId);
@@ -438,6 +445,7 @@ export async function createFromWindow(windowId: number, name: string): Promise<
   };
   const f = await drive.create(doc);
   await putWorkspace({ doc, fileId: f.id, modifiedTime: f.modifiedTime, syncedHash: hashOf(doc) });
+  await setWindowBase(doc.id, hashOf(doc));
   await mapWindow(windowId, doc.id);
   await refreshAnchor(windowId, doc.id, doc.name);
   return doc.id;
@@ -481,6 +489,7 @@ export async function openWorkspace(wsId: string): Promise<void> {
     await mapWindow(winId, wsId);
     await applyToWindow(winId, doc, true, await getAliases(), record);
     await refreshAnchor(winId, wsId, doc.name);
+    if (!pending) await setWindowBase(wsId, cached.syncedHash);
     return true;
   });
   // 未送信があるときは、古いタブのまま Drive に書かないよう touch しない（後の送信で時刻も更新される）
@@ -537,6 +546,7 @@ export async function deleteWorkspace(wsId: string): Promise<void> {
   await deleteWorkspaceCache(wsId);
   // 関連付けとキャッシュを外した後に消す（間に来たタブイベントで積み直されないように）
   await removeOutbox(wsId);
+  await removeWindowBase(wsId);
   await clearConflict(wsId);
   await refreshBadge();
   if (winId !== null && (await windowExists(winId))) await removeAnchors(winId);
@@ -568,6 +578,7 @@ export async function resolveConflict(wsId: string, keep: "remote" | "local"): P
       if (!ws) return false;
       await applyToWindow(winId, ws.doc, false, await getAliases(), aliasRecorder(wsId));
       await refreshAnchor(winId, wsId, ws.doc.name);
+      await setWindowBase(wsId, ws.syncedHash);
       return true;
     });
   }
@@ -589,17 +600,57 @@ export function onUnsettled(cb: () => void): void {
   unsettledListener = cb;
 }
 
-/** ウィンドウをワークスペースに結び付ける。ws は結び付ける先で、まだどのウィンドウにも結び付いていないこと */
-async function bindWindow(windowId: number, tabs: chrome.tabs.Tab[], ws: CachedWorkspace): Promise<void> {
-  const wsId = ws.doc.id;
-  // 再起動前の別名を、復元されたタブへ付け直す（関連付けより前に付けて、直後の撮影でリダイレクト先を送らないようにする）
-  const infos = tabs.flatMap((t) =>
-    t.id === undefined ? [] : [{ id: t.id, url: urlOf(t), loaded: t.status === "complete" }],
-  );
-  const r = restoreAliases(await getStaleAliases(), wsId, infos, Date.now());
-  await commitRestoredAliases(r.restored, r.rest);
-  await mapWindow(windowId, wsId);
+/**
+ * 結び付けたウィンドウと Drive のどちらが変わったかを判定し、Drive だけが新しければ反映する（反映したら true）。
+ * trustBase: 最後に Drive と一致した内容を当てにするか（手動で結び付けるウィンドウは、そのワークスペースのものとは限らない）
+ */
+async function reconcileContent(windowId: number, wsId: string, trustBase: boolean): Promise<boolean> {
+  const ws = (await getWorkspaces())[wsId];
+  if (!ws || (await getConflicts())[wsId]) return false;
+  const aliases = await getAliases();
+  const snap = await capture(windowId, aliases);
+  const windowHash = hashOf(snap);
+  const pending = await getOutboxEntry(wsId);
+  const action = decideOnBind({
+    windowHash,
+    tabCount: snap.tabs.length,
+    syncedHash: ws.syncedHash,
+    baseHash: trustBase ? (await getWindowBases())[wsId] : undefined,
+    hasPending: !!pending,
+  });
+  if (action === "conflict") {
+    await markConflict(wsId);
+    await refreshBadge();
+    return false;
+  }
+  if (action === "keep") {
+    if (windowHash === ws.syncedHash) await setWindowBase(wsId, windowHash);
+    return false;
+  }
+  // 送れなかった未送信の状態があれば（オフライン等）、そちらを反映する
+  const doc = pending ? { ...ws.doc, tabs: pending.tabs, groups: pending.groups } : ws.doc;
+  await applyToWindow(windowId, doc, false, aliases, aliasRecorder(wsId));
   await refreshAnchor(windowId, wsId, ws.doc.name);
+  if (!pending) await setWindowBase(wsId, ws.syncedHash);
+  return true;
+}
+
+/** ウィンドウをワークスペースに結び付ける。ws は結び付ける先で、まだどのウィンドウにも結び付いていないこと */
+async function bindWindow(windowId: number, tabs: chrome.tabs.Tab[], ws: CachedWorkspace, trustBase: boolean): Promise<void> {
+  const wsId = ws.doc.id;
+  // 対応表に載せた時点でタブイベントの撮影が始まるので、ガードを先に立てる（判定の前に古い内容を積まないように）
+  await withApplyGuardWhenIdle(windowId, async () => {
+    // 再起動前の別名を、復元されたタブへ付け直す（関連付けより前に付けて、直後の撮影でリダイレクト先を送らないようにする）
+    const infos = tabs.flatMap((t) =>
+      t.id === undefined ? [] : [{ id: t.id, url: urlOf(t), loaded: t.status === "complete" }],
+    );
+    const r = restoreAliases(await getStaleAliases(), wsId, infos, Date.now());
+    await commitRestoredAliases(r.restored, r.rest);
+    await mapWindow(windowId, wsId);
+    await refreshAnchor(windowId, wsId, ws.doc.name);
+    return reconcileContent(windowId, wsId, trustBase);
+  });
+  // 手元の変更や確認待ちの内容を積む（Drive の内容を反映した直後は同期済みと同じなので積まれない）
   await captureToOutbox(windowId, wsId);
 }
 
@@ -629,7 +680,7 @@ async function reconcileUnbound(
   if (strays.length) await chrome.tabs.remove(strays);
   if (!target) return;
   bound.add(target.doc.id);
-  await bindWindow(win.id!, tabs, target);
+  await bindWindow(win.id!, tabs, target, true);
 }
 
 /**
@@ -640,6 +691,7 @@ export async function reconcileWindows(): Promise<void> {
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const all = await getWorkspaces();
   const map = await getWindowMap();
+  const bases = await getWindowBases();
   const synced = !!(await getLocal("lastSyncAt"));
   const alive = new Set(windows.map((w) => w.id));
   const bound = new Set(Object.entries(map).flatMap(([w, id]) => (alive.has(Number(w)) ? [id] : [])));
@@ -648,8 +700,11 @@ export async function reconcileWindows(): Promise<void> {
     try {
       const wsId = map[String(w.id)];
       const ws = wsId === undefined ? undefined : all[wsId];
-      if (ws) await ensureAnchor(w.id, ws.doc.id, ws.doc.name);
-      else if (Date.now() - (lastTabArrival.get(w.id) ?? 0) < SETTLE_MS) unsettledListener();
+      if (ws) {
+        await ensureAnchor(w.id, ws.doc.id, ws.doc.name);
+        // 記録が無い版から更新した直後。結び付いているウィンドウは同期できていたので、今の内容を基準にする
+        if (!(ws.doc.id in bases)) await setWindowBase(ws.doc.id, ws.syncedHash);
+      } else if (Date.now() - (lastTabArrival.get(w.id) ?? 0) < SETTLE_MS) unsettledListener();
       else await reconcileUnbound(w, all, bound, synced);
     } catch (e) {
       // ドラッグ中はタブを操作できないなど。次の見直しでやり直す
@@ -665,7 +720,7 @@ export async function linkWindow(windowId: number, wsId: string): Promise<void> 
   if (existing !== null && (await windowExists(existing))) throw new Error("このワークスペースは別のウィンドウで開いています");
   const ws = (await getWorkspaces())[wsId];
   if (!ws) throw new Error("ワークスペースが見つかりません");
-  await bindWindow(windowId, await sortedTabs(windowId), ws);
+  await bindWindow(windowId, await sortedTabs(windowId), ws, false);
 }
 
 /** 目印だけになったウィンドウを閉じる（最後のタブを閉じるとウィンドウも閉じる、という通常の動作に合わせる） */

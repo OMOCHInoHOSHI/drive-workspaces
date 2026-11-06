@@ -87,7 +87,7 @@ export interface StatusResponse {
     browser: string | null;
     profileName: string | null;
     openWindowId: number | null;
-    /** 別の端末でも更新されていて、どちらを残すか確認待ち */
+    /** 手元と Drive の内容が違い、どちらを残すか確認待ち */
     conflict: boolean;
   }[];
 }

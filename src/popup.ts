@@ -62,7 +62,7 @@ async function act(fn: () => Promise<unknown>) {
   }
 }
 
-/** 別の端末でも更新されていたワークスペースについて、どちらを残すか選んでもらう */
+/** 手元と Drive の内容が違うワークスペースについて、どちらを残すか選んでもらう */
 function conflictNotice(w: Item): HTMLElement {
   const here = w.openWindowId !== null ? "この窓" : "この端末";
   const choice = (keep: "remote" | "local", label: string, warning: string) => {
@@ -75,12 +75,12 @@ function conflictNotice(w: Item): HTMLElement {
   return el(
     "div",
     { className: "conflict" },
-    el("div", { textContent: `「${w.name}」は別の端末でも更新されています（最終: ${placeLabel(w)}）` }),
+    el("div", { textContent: `「${w.name}」は${here}と Drive の内容が違います（Drive の最終: ${placeLabel(w)}）` }),
     el(
       "div",
       { className: "row" },
-      choice("remote", "別の端末の内容にする", `「${w.name}」を別の端末の内容にします。\n${here}の変更は失われます。`),
-      choice("local", `${here}の内容で上書きする`, `「${w.name}」を${here}の内容で上書きします。\n別の端末の変更は失われます。`),
+      choice("remote", "Drive の内容にする", `「${w.name}」を Drive の内容にします。\n${here}の変更は失われます。`),
+      choice("local", `${here}の内容で上書きする`, `「${w.name}」を${here}の内容で上書きします。\nDrive の内容は失われます。`),
     ),
   );
 }
