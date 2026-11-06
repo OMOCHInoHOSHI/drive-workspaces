@@ -1,10 +1,10 @@
 import { detectBrowser } from "./browser.js";
 import * as drive from "./drive.js";
-import { newAlias, restoreAliases, staleUrlMap } from "./alias.js";
+import { newAlias, restoreAliases } from "./alias.js";
 import { anchorUrl, anchorWsId } from "./anchor.js";
 import { closeWindowWithAnchor, ensureAnchor, removeAnchors } from "./anchorTab.js";
 import { needsUpload, type OutboxEntry, shouldEnqueue } from "./outbox.js";
-import { applyToWindow, capture, hashOf, isSyncable, similarity, urlOf } from "./snapshot.js";
+import { applyToWindow, capture, hashOf, isSyncable, sortedTabs, urlOf } from "./snapshot.js";
 import {
   commitRestoredAliases,
   deleteWorkspaceCache,
@@ -414,6 +414,7 @@ export async function createFromWindow(windowId: number, name: string): Promise<
 }
 
 export async function openWorkspace(wsId: string): Promise<void> {
+  await reconcileWindows(); // 復元された直後のウィンドウがあれば、そこへ移動できるように結び付けておく
   // 開く前に未送信を送り、最新を取り込む（失敗しても手元のキャッシュで開く）
   await flushOutbox(wsId).catch(() => undefined);
   await pull().catch(() => undefined);
@@ -509,47 +510,106 @@ export async function deleteWorkspace(wsId: string): Promise<void> {
   if (winId !== null && (await windowExists(winId))) await removeAnchors(winId);
 }
 
-/** ブラウザ再起動後、開いているウィンドウとワークスペースをURLの一致度で再対応づけする */
-export async function rematchWindows(): Promise<void> {
-  const map = await getWindowMap();
-  const mappedWs = new Set(Object.values(map));
-  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
-  const all = Object.values(await getWorkspaces());
-  const box = await getOutbox();
-  const stale = await getStaleAliases();
-  const candidates: { win: number; ws: CachedWorkspace; score: number }[] = [];
+// ---- 目印との突き合わせ ----
 
+/** タブが届いた直後のウィンドウは復元の途中かもしれないので、この時間がたつまで結び付けない */
+const SETTLE_MS = 800;
+const lastTabArrival = new Map<number, number>();
+export function noteTabArrival(windowId: number): void {
+  lastTabArrival.set(windowId, Date.now());
+}
+
+/** 復元の途中で見送ったときの再実行先（background が見直しの予約を登録する） */
+let unsettledListener: () => void = () => undefined;
+export function onUnsettled(cb: () => void): void {
+  unsettledListener = cb;
+}
+
+/** ウィンドウをワークスペースに結び付ける。ws は結び付ける先で、まだどのウィンドウにも結び付いていないこと */
+async function bindWindow(windowId: number, tabs: chrome.tabs.Tab[], ws: CachedWorkspace): Promise<void> {
+  const wsId = ws.doc.id;
+  // 再起動前の別名を、復元されたタブへ付け直す（関連付けより前に付けて、直後の撮影でリダイレクト先を送らないようにする）
+  const infos = tabs.flatMap((t) =>
+    t.id === undefined ? [] : [{ id: t.id, url: urlOf(t), loaded: t.status === "complete" }],
+  );
+  const r = restoreAliases(await getStaleAliases(), wsId, infos, Date.now());
+  await commitRestoredAliases(r.restored, r.rest);
+  await mapWindow(windowId, wsId);
+  await refreshAnchor(windowId, wsId, ws.doc.name);
+  await captureToOutbox(windowId, wsId);
+}
+
+/**
+ * 結び付いていないウィンドウの目印を調べる。先頭の目印だけを有効とする
+ *（保存済みタブグループを別のウィンドウで開いたときなどに、無関係なタブをワークスペースへ送らないため）。
+ * bound: どこかのウィンドウに結び付いているワークスペース。synced: 一度でも同期が終わっているか
+ */
+async function reconcileUnbound(
+  win: chrome.windows.Window,
+  all: Record<string, CachedWorkspace>,
+  bound: Set<string>,
+  synced: boolean,
+): Promise<void> {
+  const tabs = [...(win.tabs ?? [])].sort((a, b) => a.index - b.index);
+  const head = tabs.filter((t) => t.pinned).length;
+  let target: CachedWorkspace | undefined;
+  const strays: number[] = [];
+  for (const t of tabs) {
+    const id = anchorWsId(urlOf(t));
+    if (id === null) continue;
+    const ws = all[id];
+    if (ws && t.index === head && !bound.has(id)) target = ws;
+    // キャッシュに無いのは削除済みのとき。同期が済むまでは判断できないので残す
+    else if (ws || synced) strays.push(t.id!);
+  }
+  if (strays.length) await chrome.tabs.remove(strays);
+  if (!target) return;
+  bound.add(target.doc.id);
+  await bindWindow(win.id!, tabs, target);
+}
+
+/**
+ * 開いているウィンドウを目印と突き合わせる。結び付いているウィンドウは目印を正しい状態に保ち、
+ * 結び付いていないウィンドウは目印から結び付ける。何度呼んでも結果は変わらない。withLock の中で呼ぶこと
+ */
+export async function reconcileWindows(): Promise<void> {
+  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+  const all = await getWorkspaces();
+  const map = await getWindowMap();
+  const synced = !!(await getLocal("lastSyncAt"));
+  const alive = new Set(windows.map((w) => w.id));
+  const bound = new Set(Object.entries(map).flatMap(([w, id]) => (alive.has(Number(w)) ? [id] : [])));
   for (const w of windows) {
-    if (w.id === undefined || map[String(w.id)] || w.incognito) continue;
-    const actualUrls = (w.tabs ?? []).map(urlOf);
-    for (const ws of all) {
-      if (mappedWs.has(ws.doc.id)) continue;
-      // 再起動前にリダイレクトされていたタブは、要求した URL に読み替えて比べる
-      const toRequested = staleUrlMap(stale, ws.doc.id);
-      const urls = actualUrls.map((u) => toRequested.get(u) ?? u).filter(isSyncable);
-      // 未送信があればそちらが最後の状態（送信前に再起動した場合など）
-      const tabs = box[ws.doc.id]?.tabs ?? ws.doc.tabs;
-      const score = similarity(urls, tabs.map((t) => t.url));
-      if (score >= 0.5) candidates.push({ win: w.id, ws, score });
+    if (w.id === undefined || w.incognito || closing.has(w.id)) continue;
+    try {
+      const wsId = map[String(w.id)];
+      const ws = wsId === undefined ? undefined : all[wsId];
+      if (ws) await ensureAnchor(w.id, ws.doc.id, ws.doc.name);
+      else if (Date.now() - (lastTabArrival.get(w.id) ?? 0) < SETTLE_MS) unsettledListener();
+      else await reconcileUnbound(w, all, bound, synced);
+    } catch (e) {
+      // ドラッグ中はタブを操作できないなど。次の見直しでやり直す
+      console.warn("[reconcile]", e);
     }
   }
-  // スコアの高い組から確定（1対1）
-  candidates.sort((a, b) => b.score - a.score);
-  const usedWin = new Set<number>();
-  let rest = stale;
-  for (const c of candidates) {
-    if (usedWin.has(c.win) || mappedWs.has(c.ws.doc.id)) continue;
-    // 再起動前の別名を、復元されたタブへ付け直す（関連付けより前に付けて、直後の撮影でリダイレクト先を送らないようにする）
-    const tabs = (windows.find((w) => w.id === c.win)?.tabs ?? []).flatMap((t) =>
-      t.id === undefined ? [] : [{ id: t.id, url: urlOf(t), loaded: t.status === "complete" }],
-    );
-    const r = restoreAliases(rest, c.ws.doc.id, tabs, Date.now());
-    rest = r.rest;
-    await commitRestoredAliases(r.restored, rest);
-    await mapWindow(c.win, c.ws.doc.id);
-    usedWin.add(c.win);
-    mappedWs.add(c.ws.doc.id);
-  }
+}
+
+/** ユーザーの指定でウィンドウをワークスペースに結び付ける（目印が付く前に結び付きが外れたウィンドウ用） */
+export async function linkWindow(windowId: number, wsId: string): Promise<void> {
+  if ((await getWindowMap())[String(windowId)]) throw new Error("このウィンドウは既にワークスペースです");
+  const existing = await windowOf(wsId);
+  if (existing !== null && (await windowExists(existing))) throw new Error("このワークスペースは別のウィンドウで開いています");
+  const ws = (await getWorkspaces())[wsId];
+  if (!ws) throw new Error("ワークスペースが見つかりません");
+  await bindWindow(windowId, await sortedTabs(windowId), ws);
+}
+
+/** 目印だけになったウィンドウを閉じる（最後のタブを閉じるとウィンドウも閉じる、という通常の動作に合わせる） */
+export async function closeIfOnlyAnchor(windowId: number): Promise<void> {
+  const wsId = (await getWindowMap())[String(windowId)];
+  if (!wsId || isApplying(windowId) || closing.has(windowId)) return;
+  const tabs = await chrome.tabs.query({ windowId });
+  if (tabs.length === 1 && anchorWsId(urlOf(tabs[0]!)) === wsId) await closeWindowWithAnchor(windowId);
 }
 
 /** ワークスペースとウィンドウの関連付けを外す（別名も消す。以後は普通のウィンドウとして扱う） */

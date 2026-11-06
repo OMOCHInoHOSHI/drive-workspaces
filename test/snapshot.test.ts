@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { anchorUrl } from "../src/anchor.js";
-import { hashOf, isSyncable, similarity, urlOf } from "../src/snapshot.js";
+import { hashOf, isSyncable, urlOf } from "../src/snapshot.js";
 import type { GroupState, TabState } from "../src/types.js";
 
 const tab = (url: string, o: Partial<TabState> = {}): TabState => ({
@@ -88,14 +88,5 @@ describe("hashOf", () => {
 
     const reversed = snap([tab("https://x/"), tab("https://y/")], []);
     assert.notEqual(hashOf(reversed), hashOf(snap([tab("https://y/"), tab("https://x/")], [])));
-  });
-});
-
-describe("similarity", () => {
-  it("Jaccard 係数を返す", () => {
-    assert.equal(similarity([], []), 0);
-    assert.equal(similarity(["a"], ["a"]), 1);
-    assert.equal(similarity(["a"], ["b"]), 0);
-    assert.equal(similarity(["a"], ["a", "b"]), 0.5);
   });
 });

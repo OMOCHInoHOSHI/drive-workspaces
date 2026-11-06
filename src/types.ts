@@ -67,6 +67,7 @@ export type Request =
   | { type: "rename"; wsId: string; name: string }
   | { type: "delete"; wsId: string }
   | { type: "detach"; windowId: number }
+  | { type: "link"; windowId: number; wsId: string }
   | { type: "syncNow" };
 
 export interface StatusResponse {

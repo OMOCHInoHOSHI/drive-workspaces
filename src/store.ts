@@ -30,7 +30,7 @@ interface LocalSchema {
   auth: AuthState;
   deviceId: string;
   workspaces: Record<string, CachedWorkspace>;
-  /** windowId(文字列) → wsId。windowId はブラウザ再起動で変わるので起動時に貼り直す */
+  /** windowId(文字列) → wsId。windowId はブラウザ再起動で変わるので、起動時に捨てて目印タブから作り直す */
   windowMap: Record<string, string>;
   pageToken: string;
   lastSyncAt: number;
@@ -41,7 +41,7 @@ interface LocalSchema {
   outbox: Record<string, OutboxEntry>;
   /** 反映で作ったタブの別名（tabId → 別名）。tabId はブラウザ再起動で変わるので、起動時に staleAliases へ移す */
   tabAliases: Record<string, TabAlias>;
-  /** ブラウザ再起動前の別名。再対応づけしたウィンドウのタブへ付け直す */
+  /** ブラウザ再起動前の別名。結び付けたウィンドウのタブへ付け直す */
   staleAliases: TabAlias[];
 }
 

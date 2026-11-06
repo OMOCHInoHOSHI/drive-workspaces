@@ -48,15 +48,8 @@ export function aliasedUrl(tabId: number | undefined, actual: string, aliases: R
   return tabId === undefined ? actual : (aliases[String(tabId)]?.url ?? actual);
 }
 
-/** ブラウザ再起動前の別名から、そのワークスペースの「実際の URL → 要求した URL」の対応を作る */
-export function staleUrlMap(stale: TabAlias[], wsId: string): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const a of stale) if (a.wsId === wsId && !m.has(a.actual)) m.set(a.actual, a.url);
-  return m;
-}
-
 /**
- * 再起動後に対応づけたウィンドウのタブへ、再起動前の別名を付け直す。
+ * 再起動後に結び付けたウィンドウのタブへ、再起動前の別名を付け直す。
  * 同じ実際の URL のタブが複数あっても、別名1件につき1タブだけに付ける
  */
 export function restoreAliases(

@@ -20,14 +20,18 @@ import {
 } from "./store.js";
 import {
   captureToOutbox,
+  closeIfOnlyAnchor,
   closeWorkspace,
   createFromWindow,
   deleteWorkspace,
   detachWindow,
+  linkWindow,
   markClosing,
+  noteTabArrival,
   onEnqueued,
+  onUnsettled,
   openWorkspace,
-  rematchWindows,
+  reconcileWindows,
   renameWorkspace,
   syncAll,
   trackWindowWork,
@@ -42,11 +46,16 @@ import type { Request, Response, StatusResponse } from "./types.js";
  */
 
 const TICK = "tick";
-const REMATCH = "rematch";
 // 撮影はイベントごとに即時に行うので、送信だけ短くまとめる。操作が続いても最大 MAX_WAIT_MS で送る
 const DEBOUNCE_MS = 500;
 const MAX_WAIT_MS = 2000;
 const FOCUS_SYNC_INTERVAL_MS = 3000;
+// 目印の見直しはタブの変更が落ち着いてから行う（復元の途中で判定しないように）。
+// 読み込みが続いて変更が止まらなくても、最大 RECONCILE_MAX_WAIT_MS で見直す
+const RECONCILE_WAIT_MS = 1000;
+const RECONCILE_MAX_WAIT_MS = 5000;
+// ポップアップの表示を待たせる上限（同期の実行中は見直しが後になる）
+const POPUP_RECONCILE_WAIT_MS = 500;
 
 async function ready(): Promise<boolean> {
   return isSignedIn();
@@ -60,6 +69,13 @@ function runSync(): Promise<void> {
     if (!(e instanceof AuthRequiredError)) console.warn("[sync]", e);
   });
 }
+
+function runReconcile(): Promise<void> {
+  return withLock(reconcileWindows).catch((e) => console.warn("[reconcile]", e));
+}
+
+const scheduleReconcile = debounceWithMaxWait(() => void runReconcile(), RECONCILE_WAIT_MS, RECONCILE_MAX_WAIT_MS);
+onUnsettled(scheduleReconcile);
 
 async function ensureAlarm(): Promise<void> {
   // Chrome 120 以降は最短30秒（0.5分）
@@ -92,11 +108,16 @@ async function handleWindowChanged(windowId: number, before?: () => Promise<bool
   await captureToOutbox(windowId, wsId);
 }
 
-chrome.tabs.onCreated.addListener((tab) => void onWindowChanged(tab.windowId));
+chrome.tabs.onCreated.addListener((tab) => {
+  noteTabArrival(tab.windowId);
+  scheduleReconcile();
+  void onWindowChanged(tab.windowId);
+});
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   // 別名の無いタブの読み込み状態だけの変化は、storage も読まず処理中にも数えない
   const navigation = (info.url !== undefined || info.status !== undefined) && !surelyNoAlias(tabId);
   const structural = info.url !== undefined || info.pinned !== undefined || info.groupId !== undefined;
+  if (structural) scheduleReconcile();
   if (!navigation && !structural) return;
   void onWindowChanged(tab.windowId, async () => {
     // 反映で作ったタブの別名を先に更新する（ユーザー自身の移動なら外して、実際の URL を撮影させる）
@@ -115,15 +136,43 @@ chrome.tabs.onRemoved.addListener((tabId, info) => {
   }
   void removeAlias(tabId);
   void onWindowChanged(info.windowId);
+  scheduleReconcile();
+  void closeIfOnlyAnchor(info.windowId).catch((e) => console.warn("[anchor]", e));
 });
 chrome.tabs.onReplaced.addListener((added, removed) => void moveAlias(removed, added));
-chrome.tabs.onMoved.addListener((_id, info) => void onWindowChanged(info.windowId));
-chrome.tabs.onAttached.addListener((_id, info) => void onWindowChanged(info.newWindowId));
-chrome.tabs.onDetached.addListener((_id, info) => void onWindowChanged(info.oldWindowId));
+chrome.tabs.onMoved.addListener((_id, info) => {
+  scheduleReconcile();
+  void onWindowChanged(info.windowId);
+});
+chrome.tabs.onAttached.addListener((_id, info) => {
+  noteTabArrival(info.newWindowId);
+  scheduleReconcile();
+  void onWindowChanged(info.newWindowId);
+});
+chrome.tabs.onDetached.addListener((_id, info) => {
+  scheduleReconcile();
+  void onWindowChanged(info.oldWindowId);
+  void closeIfOnlyAnchor(info.oldWindowId).catch((e) => console.warn("[anchor]", e));
+});
 chrome.tabGroups.onCreated.addListener((g) => void onWindowChanged(g.windowId));
-chrome.tabGroups.onUpdated.addListener((g) => void onWindowChanged(g.windowId));
-chrome.tabGroups.onRemoved.addListener((g) => void onWindowChanged(g.windowId));
-chrome.tabGroups.onMoved.addListener((g) => void onWindowChanged(g.windowId));
+chrome.tabGroups.onUpdated.addListener((g) => {
+  scheduleReconcile();
+  void onWindowChanged(g.windowId);
+});
+chrome.tabGroups.onRemoved.addListener((g) => {
+  scheduleReconcile();
+  void onWindowChanged(g.windowId);
+});
+chrome.tabGroups.onMoved.addListener((g) => {
+  scheduleReconcile();
+  void onWindowChanged(g.windowId);
+});
+
+// 遅れて復元されたウィンドウも、ここから目印で結び付く
+chrome.windows.onCreated.addListener((w) => {
+  if (w.id !== undefined) noteTabArrival(w.id);
+  scheduleReconcile();
+});
 
 chrome.windows.onRemoved.addListener((windowId) => {
   markClosing(windowId);
@@ -160,20 +209,21 @@ async function pruneStaleTabAliases(): Promise<void> {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === TICK) {
     void runSync();
+    void runReconcile();
     void pruneStaleTabAliases().catch((e) => console.warn("[alias prune]", e));
   }
-  if (alarm.name === REMATCH) void withLock(rematchWindows);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void (async () => {
-    // windowId・tabId はブラウザ再起動で変わるため、古い対応表は捨てて貼り直す（別名は付け直し用に退避）
-    await setLocal("windowMap", {});
-    await rotateAliasesOnStartup();
+    // windowId・tabId はブラウザ再起動で変わるため、古い対応表は捨てて目印から作り直す（別名は付け直し用に退避）
+    await withLock(async () => {
+      await setLocal("windowMap", {});
+      await rotateAliasesOnStartup();
+    });
     await ensureAlarm();
-    // セッション復元でウィンドウが出そろうのを待つ。念のため30秒後にもう一度
-    setTimeout(() => void withLock(rematchWindows), 3000);
-    await chrome.alarms.create(REMATCH, { delayInMinutes: 0.5 });
+    // 先に結び付けてから同期する。遅れて復元されるウィンドウはタブイベントで結び付く
+    void runReconcile();
     void runSync();
   })();
 });
@@ -182,6 +232,8 @@ chrome.runtime.onInstalled.addListener(() => {
   // インストール・更新ではブラウザは再起動していない（tabId はそのまま有効）ので、別名はそのまま使える
   void markAliasesReady();
   void ensureAlarm();
+  // 結び付いているウィンドウに目印を付ける（目印の無い版からの更新のとき）
+  void runReconcile();
   void runSync();
 });
 
@@ -225,6 +277,7 @@ async function status(): Promise<StatusResponse> {
 async function handle(req: Request): Promise<unknown> {
   switch (req.type) {
     case "status":
+      await Promise.race([runReconcile(), new Promise((r) => setTimeout(r, POPUP_RECONCILE_WAIT_MS))]);
       return status();
     case "syncNow":
       return withLock(syncAll);
@@ -240,6 +293,8 @@ async function handle(req: Request): Promise<unknown> {
       return withLock(() => deleteWorkspace(req.wsId));
     case "detach":
       return withLock(() => detachWindow(req.windowId));
+    case "link":
+      return withLock(() => linkWindow(req.windowId, req.wsId));
   }
 }
 

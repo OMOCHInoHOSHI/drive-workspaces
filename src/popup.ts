@@ -188,6 +188,9 @@ async function render() {
         },
       },
     ];
+    if (!mine && w.openWindowId === null) {
+      items.push({ label: "このウィンドウに結び付ける", fn: () => send({ type: "link", windowId: currentWindowId, wsId: w.id }) });
+    }
     if (w.openWindowId !== null) items.push({ label: "閉じる", fn: () => send({ type: "close", wsId: w.id }) });
     if (w.openWindowId !== null && w.openWindowId === currentWindowId) {
       items.push({ label: "関連付け解除", fn: () => send({ type: "detach", windowId: currentWindowId }) });

@@ -8,7 +8,6 @@ import {
   pruneAliases,
   REDIRECT_WINDOW_MS,
   restoreAliases,
-  staleUrlMap,
   type TabAlias,
 } from "../src/alias.js";
 
@@ -83,17 +82,11 @@ describe("aliasedUrl", () => {
   });
 });
 
-describe("staleUrlMap / restoreAliases", () => {
+describe("restoreAliases", () => {
   const stale = [
     alias({ actual: LOGIN }),
     alias({ wsId: "other", url: "https://b.example/", actual: "https://b.example/login" }),
   ];
-
-  it("そのワークスペースの実際の URL → 要求した URL の対応を作る", () => {
-    const m = staleUrlMap(stale, "ws");
-    assert.equal(m.get(LOGIN), REQ);
-    assert.equal(m.size, 1);
-  });
 
   it("実際の URL が一致するタブへ付け直し、使わなかった別名は残す", () => {
     const { restored, rest } = restoreAliases(stale, "ws", [{ id: 10, url: LOGIN, loaded: true }], 99);

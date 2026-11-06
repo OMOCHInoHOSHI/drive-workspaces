@@ -180,13 +180,3 @@ export async function applyToWindow(
     if (id !== undefined) await chrome.tabs.update(id, { active: true });
   }
 }
-
-/** ブラウザ再起動後にウィンドウとワークスペースを再対応づけするための類似度（Jaccard） */
-export function similarity(a: string[], b: string[]): number {
-  const A = new Set(a);
-  const B = new Set(b);
-  if (A.size === 0 && B.size === 0) return 0;
-  let inter = 0;
-  for (const x of A) if (B.has(x)) inter++;
-  return inter / (A.size + B.size - inter);
-}
