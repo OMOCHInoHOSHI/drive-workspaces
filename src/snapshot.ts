@@ -1,10 +1,12 @@
 import { aliasedUrl, type TabAlias } from "./alias.js";
+import { anchorWsId } from "./anchor.js";
 import type { GroupState, TabState, WorkspaceDoc } from "./types.js";
 
 /**
  * ウィンドウの状態の取得（capture）と、保存状態のウィンドウへの適用（apply）。
  * 同期対象は http/https のタブのみ。chrome:// や edge:// はブラウザごとに違い、
  * 他ブラウザで開けないため対象外（ローカルにはそのまま残す）。
+ * 目印タブはウィンドウごとの印なので、https でも対象外。
  */
 
 const NONE = -1; // chrome.tabGroups.TAB_GROUP_ID_NONE
@@ -20,7 +22,7 @@ export function urlOf(tab: chrome.tabs.Tab): string {
 }
 
 export function isSyncable(url: string): boolean {
-  return url.startsWith("https://") || url.startsWith("http://");
+  return (url.startsWith("https://") || url.startsWith("http://")) && anchorWsId(url) === null;
 }
 
 async function sortedTabs(windowId: number): Promise<chrome.tabs.Tab[]> {
@@ -114,9 +116,10 @@ export async function applyToWindow(
     }
   }
 
-  // 2. 不要なタブを削除（最後のタブを消すとウィンドウごと閉じるので、空になるなら新しいタブを残す）
+  // 2. 不要なタブを削除（最後のタブを消すとウィンドウごと閉じるので、空になるなら新しいタブを残す）。
+  // 目印タブは数えない（目印だけになると、目印を操作対象のタブとして表示してしまうため）
   const extras = pool.filter((t) => !used.has(t.id!)).map((t) => t.id!);
-  const nonSyncableCount = current.length - pool.length;
+  const nonSyncableCount = current.filter((t) => !pool.includes(t) && anchorWsId(urlOf(t)) === null).length;
   if (ids.length === 0 && nonSyncableCount === 0) await chrome.tabs.create({ windowId, active: true });
   if (extras.length) await chrome.tabs.remove(extras);
 

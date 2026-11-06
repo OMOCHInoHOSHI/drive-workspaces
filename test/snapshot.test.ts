@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { anchorUrl } from "../src/anchor.js";
 import { hashOf, isSyncable, similarity, urlOf } from "../src/snapshot.js";
 import type { GroupState, TabState } from "../src/types.js";
 
@@ -42,6 +43,11 @@ describe("isSyncable", () => {
     assert.equal(isSyncable("data:text/html,hi"), false);
     assert.equal(isSyncable("file:///C:/tmp/x.html"), false);
     assert.equal(isSyncable(""), false);
+  });
+
+  it("目印タブは https でも対象外", () => {
+    assert.equal(isSyncable(anchorUrl("ws")), false);
+    assert.equal(isSyncable("https://www.google.com/"), true);
   });
 });
 
