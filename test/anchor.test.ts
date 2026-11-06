@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { anchorUrl, anchorWsId } from "../src/anchor.js";
+import { anchorUrl, anchorWsId, canRecreateAnchor, recentRecreations } from "../src/anchor.js";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
@@ -40,5 +40,20 @@ describe("anchorUrl / anchorWsId", () => {
   it("URL として読めない文字列は目印ではない", () => {
     assert.equal(anchorWsId(""), null);
     assert.equal(anchorWsId("#dw=x"), null);
+  });
+});
+
+describe("canRecreateAnchor", () => {
+  const MIN = 60 * 1000;
+
+  it("10分間に3回までは作り直せる", () => {
+    assert.equal(canRecreateAnchor([], 0), true);
+    assert.equal(canRecreateAnchor([1, 2], 3), true);
+    assert.equal(canRecreateAnchor([1, 2, 3], 4), false);
+  });
+
+  it("10分たった分は数えない", () => {
+    assert.equal(canRecreateAnchor([0, MIN, 2 * MIN], 10 * MIN), true);
+    assert.deepEqual(recentRecreations([0, MIN, 2 * MIN], 10 * MIN), [MIN, 2 * MIN]);
   });
 });

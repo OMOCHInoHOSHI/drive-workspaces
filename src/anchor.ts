@@ -9,6 +9,9 @@
 
 const ANCHOR_PAGE = "https://www.google.com/";
 const MARK = "#dw=";
+/** 同じウィンドウで目印を作り直せる回数と、その数え直しの間隔 */
+const RECREATE_LIMIT = 3;
+const RECREATE_WINDOW_MS = 10 * 60 * 1000;
 
 export function anchorUrl(wsId: string): string {
   return `${ANCHOR_PAGE}${MARK}${wsId}`;
@@ -26,4 +29,16 @@ export function anchorWsId(url: string): string | null {
   if (u.protocol !== "https:" || !u.hash.startsWith(MARK)) return null;
   if (u.hostname !== "google.com" && !u.hostname.endsWith(".google.com")) return null;
   return u.hash.slice(MARK.length) || null;
+}
+
+/**
+ * 今までの作り直しの時刻のうち、回数の制限に数えるものを返す。
+ * 目印の URL が別のサイトへリダイレクトされる環境では、作り直すたびに目印が失われてタブが増え続けるので、回数を制限する
+ */
+export function recentRecreations(times: number[], now: number): number[] {
+  return times.filter((t) => now - t < RECREATE_WINDOW_MS);
+}
+
+export function canRecreateAnchor(times: number[], now: number): boolean {
+  return recentRecreations(times, now).length < RECREATE_LIMIT;
 }

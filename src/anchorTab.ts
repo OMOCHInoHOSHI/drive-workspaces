@@ -1,6 +1,6 @@
-import { anchorUrl, anchorWsId } from "./anchor.js";
+import { anchorUrl, anchorWsId, canRecreateAnchor, recentRecreations } from "./anchor.js";
 import { sortedTabs, urlOf } from "./snapshot.js";
-import { getAnchorGroups, setAnchorGroup } from "./store.js";
+import { getAnchorGroups, getAnchorRecreations, setAnchorGroup, setAnchorRecreations } from "./store.js";
 
 /**
  * 目印タブの操作。ウィンドウの先頭に、ワークスペース名のタブグループへ入れた目印タブを1枚置く。
@@ -28,6 +28,15 @@ export async function ensureAnchor(windowId: number, wsId: string, name: string)
   const strays = anchors.filter((t) => t !== found).map((t) => t.id!);
   if (strays.length) await chrome.tabs.remove(strays);
 
+  if (!found) {
+    const now = Date.now();
+    const times = await getAnchorRecreations(windowId);
+    if (!canRecreateAnchor(times, now)) {
+      console.warn("[anchor] 目印の作り直しが続いているので見送ります", windowId);
+      return;
+    }
+    await setAnchorRecreations(windowId, [...recentRecreations(times, now), now]);
+  }
   let anchor =
     found ??
     (await chrome.tabs.create({ windowId, url: anchorUrl(wsId), active: false, index: tabs.filter((t) => t.pinned).length }));

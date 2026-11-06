@@ -587,6 +587,10 @@ export async function resolveConflict(wsId: string, keep: "remote" | "local"): P
 
 // ---- 目印との突き合わせ ----
 
+function isOnlyAnchor(tabs: chrome.tabs.Tab[], wsId: string): boolean {
+  return tabs.length === 1 && anchorWsId(urlOf(tabs[0]!)) === wsId;
+}
+
 /** タブが届いた直後のウィンドウは復元の途中かもしれないので、この時間がたつまで結び付けない */
 const SETTLE_MS = 800;
 const lastTabArrival = new Map<number, number>();
@@ -672,7 +676,7 @@ async function reconcileUnbound(
   for (const t of tabs) {
     const id = anchorWsId(urlOf(t));
     if (id === null) continue;
-    const ws = all[id];
+    const ws = Object.hasOwn(all, id) ? all[id] : undefined;
     if (ws && t.index === head && !bound.has(id)) target = ws;
     // キャッシュに無いのは削除済みのとき。同期が済むまでは判断できないので残す
     else if (ws || synced) strays.push(t.id!);
@@ -701,6 +705,11 @@ export async function reconcileWindows(): Promise<void> {
       const wsId = map[String(w.id)];
       const ws = wsId === undefined ? undefined : all[wsId];
       if (ws) {
+        // 適用ガードの間に最後のタブが閉じられると closeIfOnlyAnchor では閉じられないので、ここで拾う
+        if (isOnlyAnchor(w.tabs ?? [], ws.doc.id) && !isApplying(w.id)) {
+          await closeWindowWithAnchor(w.id);
+          continue;
+        }
         await ensureAnchor(w.id, ws.doc.id, ws.doc.name);
         // 記録が無い版から更新した直後。結び付いているウィンドウは同期できていたので、今の内容を基準にする
         if (!(ws.doc.id in bases)) await setWindowBase(ws.doc.id, ws.syncedHash);
@@ -727,13 +736,14 @@ export async function linkWindow(windowId: number, wsId: string): Promise<void> 
 export async function closeIfOnlyAnchor(windowId: number): Promise<void> {
   const wsId = (await getWindowMap())[String(windowId)];
   if (!wsId || isApplying(windowId) || closing.has(windowId)) return;
-  const tabs = await chrome.tabs.query({ windowId });
-  if (tabs.length === 1 && anchorWsId(urlOf(tabs[0]!)) === wsId) await closeWindowWithAnchor(windowId);
+  if (isOnlyAnchor(await chrome.tabs.query({ windowId }), wsId)) await closeWindowWithAnchor(windowId);
 }
 
 /** ワークスペースとウィンドウの関連付けを外す（別名も消す。以後は普通のウィンドウとして扱う） */
 export async function detachWindow(windowId: number): Promise<void> {
   const wsId = (await getWindowMap())[String(windowId)];
+  // 目印を先に消す（残ったまま対応だけ外すと、次の見直しで結び付き直してしまう）
+  await removeAnchors(windowId);
   await unmapWindow(windowId);
   if (wsId) {
     await removeAliasesOfWorkspace(wsId);
@@ -744,5 +754,4 @@ export async function detachWindow(windowId: number): Promise<void> {
       await refreshBadge();
     }
   }
-  await removeAnchors(windowId);
 }

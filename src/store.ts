@@ -23,6 +23,8 @@ interface SessionSchema {
   aliasesReady: true;
   /** ワークスペース → 目印のタブグループ ID。groupId はブラウザ再起動で変わるので session に置く */
   anchorGroups: Record<string, number>;
+  /** windowId → 目印を作り直した時刻。回数の制限に使う（サービスワーカーが止まっても数え直さないよう session に置く） */
+  anchorRecreations: Record<string, number[]>;
 }
 
 interface LocalSchema {
@@ -334,6 +336,21 @@ export async function setAnchorGroup(wsId: string, groupId: number): Promise<voi
   await serialize(async () => {
     const anchorGroups = { ...(await getAnchorGroups()), [wsId]: groupId };
     await chrome.storage.session.set({ anchorGroups } satisfies Partial<SessionSchema>);
+  });
+}
+
+export async function getAnchorRecreations(windowId: number): Promise<number[]> {
+  const r = await chrome.storage.session.get("anchorRecreations");
+  return (r.anchorRecreations as SessionSchema["anchorRecreations"] | undefined)?.[String(windowId)] ?? [];
+}
+
+export async function setAnchorRecreations(windowId: number, times: number[]): Promise<void> {
+  await serialize(async () => {
+    const r = await chrome.storage.session.get("anchorRecreations");
+    const all = (r.anchorRecreations as SessionSchema["anchorRecreations"] | undefined) ?? {};
+    await chrome.storage.session.set({
+      anchorRecreations: { ...all, [String(windowId)]: times },
+    } satisfies Partial<SessionSchema>);
   });
 }
 
