@@ -4,6 +4,7 @@ import { debounceWithMaxWait } from "./outbox.js";
 import {
   aliasesReady,
   getAliases,
+  getConflicts,
   getLocal,
   getOutbox,
   getWindowMap,
@@ -33,6 +34,7 @@ import {
   openWorkspace,
   reconcileWindows,
   renameWorkspace,
+  resolveConflict,
   syncAll,
   trackWindowWork,
   whoAmI,
@@ -240,7 +242,7 @@ chrome.runtime.onInstalled.addListener(() => {
 // ---- popup / options からのメッセージ ----
 
 async function status(): Promise<StatusResponse> {
-  const [all, map, signedIn, settings, lastSyncAt, lastError, box] = await Promise.all([
+  const [all, map, signedIn, settings, lastSyncAt, lastError, box, conflicts] = await Promise.all([
     getWorkspaces(),
     getWindowMap(),
     isSignedIn(),
@@ -248,6 +250,7 @@ async function status(): Promise<StatusResponse> {
     getLocal("lastSyncAt"),
     getLocal("lastError"),
     getOutbox(),
+    getConflicts(),
   ]);
   const me = await whoAmI();
   const alive = new Set((await chrome.windows.getAll()).map((w) => w.id));
@@ -270,6 +273,7 @@ async function status(): Promise<StatusResponse> {
       browser: w.doc.browser ?? null,
       profileName: w.doc.profileName || null,
       openWindowId: winOf.get(w.doc.id) ?? null,
+      conflict: w.doc.id in conflicts,
     })),
   };
 }
@@ -295,6 +299,8 @@ async function handle(req: Request): Promise<unknown> {
       return withLock(() => detachWindow(req.windowId));
     case "link":
       return withLock(() => linkWindow(req.windowId, req.wsId));
+    case "resolveConflict":
+      return withLock(() => resolveConflict(req.wsId, req.keep));
   }
 }
 

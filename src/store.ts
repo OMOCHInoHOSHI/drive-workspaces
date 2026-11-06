@@ -39,6 +39,8 @@ interface LocalSchema {
   sortOrder: SortOrder;
   /** 未送信のワークスペースの最新状態（wsId → 状態）。ブラウザ再起動をまたいで残すため local に置く */
   outbox: Record<string, OutboxEntry>;
+  /** 別の端末でも更新されていて、どちらを残すか確認待ちのワークスペース（wsId → 検出時刻） */
+  conflicts: Record<string, number>;
   /** 反映で作ったタブの別名（tabId → 別名）。tabId はブラウザ再起動で変わるので、起動時に staleAliases へ移す */
   tabAliases: Record<string, TabAlias>;
   /** ブラウザ再起動前の別名。結び付けたウィンドウのタブへ付け直す */
@@ -166,6 +168,27 @@ export async function removeOutbox(wsId: string): Promise<void> {
     if (!(wsId in box)) return;
     delete box[wsId];
     await setLocal("outbox", box);
+  });
+}
+
+export async function getConflicts(): Promise<Record<string, number>> {
+  return (await getLocal("conflicts")) ?? {};
+}
+
+export async function markConflict(wsId: string): Promise<void> {
+  await serialize(async () => {
+    const all = await getConflicts();
+    if (wsId in all) return;
+    await setLocal("conflicts", { ...all, [wsId]: Date.now() });
+  });
+}
+
+export async function clearConflict(wsId: string): Promise<void> {
+  await serialize(async () => {
+    const all = await getConflicts();
+    if (!(wsId in all)) return;
+    delete all[wsId];
+    await setLocal("conflicts", all);
   });
 }
 

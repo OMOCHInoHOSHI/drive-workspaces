@@ -94,6 +94,12 @@ export async function download(fileId: string): Promise<WorkspaceDoc> {
   return json;
 }
 
+/** メタデータだけを取得する（送信の直前に、手元が知っている版から更新されていないか確かめる） */
+export async function getMeta(fileId: string): Promise<DriveFile> {
+  const res = await request(`${API}/files/${encodeURIComponent(fileId)}?fields=id,name,modifiedTime`);
+  return (await res.json()) as DriveFile;
+}
+
 export async function create(doc: WorkspaceDoc): Promise<DriveFile> {
   const boundary = "dw" + crypto.randomUUID();
   const metadata = { name: fileNameFor(doc.id), parents: ["appDataFolder"], mimeType: "application/json" };

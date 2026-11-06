@@ -86,6 +86,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .row input { flex: 1; min-width: 0; }
 .row button { flex: none; white-space: nowrap; }
 .empty { padding: 16px 12px; color: var(--muted); }
+.conflict { display: grid; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.conflict .row { flex-wrap: wrap; }
 .list > .empty { padding: 8px 4px; }
 
 /* options */

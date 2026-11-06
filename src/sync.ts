@@ -3,12 +3,15 @@ import * as drive from "./drive.js";
 import { newAlias, restoreAliases } from "./alias.js";
 import { anchorUrl, anchorWsId } from "./anchor.js";
 import { closeWindowWithAnchor, ensureAnchor, removeAnchors } from "./anchorTab.js";
-import { needsUpload, type OutboxEntry, shouldEnqueue } from "./outbox.js";
+import { conflictsWithRemote } from "./conflict.js";
+import { needsUpload, type OutboxEntry, sameEntry, shouldEnqueue } from "./outbox.js";
 import { applyToWindow, capture, hashOf, isSyncable, sortedTabs, urlOf } from "./snapshot.js";
 import {
+  clearConflict,
   commitRestoredAliases,
   deleteWorkspaceCache,
   getAliases,
+  getConflicts,
   getDeviceId,
   getLocal,
   getOutbox,
@@ -17,6 +20,7 @@ import {
   getWindowMap,
   getWorkspaces,
   mapWindow,
+  markConflict,
   putAlias,
   putOutbox,
   putWorkspace,
@@ -34,7 +38,9 @@ import type { CachedWorkspace, WorkspaceDoc } from "./types.js";
  * 同期の中核。
  * - ローカル → Drive: タブの変更時にすぐ状態を撮影して outbox に積み、デバウンス or 定期アラームで outbox から送信
  * - Drive → ローカル: changes.list を定期ポーリングし、新しいものだけ取り込んでウィンドウに差分適用
- * - 競合: Drive v3 は条件付き更新ができないので、ワークスペース単位で後勝ち（Drive の modifiedTime 基準）
+ * - 競合: 新旧は Drive の modifiedTime で判定する。手元の未送信と別の端末の更新の両方でタブが変わっていたら、
+ *   自動で上書きせず、ユーザーが選ぶまで送信も反映も止める。Drive v3 は条件付き更新ができないので、
+ *   送信の直前に確認する（確認と送信のごく短い隙間に書かれた更新は後勝ちになる）
  */
 
 // ---- 排他制御（同期処理は直列に実行する） ----
@@ -226,12 +232,30 @@ async function snapshotNow(windowId: number, wsId: string): Promise<void> {
   if (await putOutbox(wsId, entry, () => shouldDiscard(windowId, wsId))) enqueuedListener();
 }
 
+/** エラーか確認待ちの競合があれば、拡張機能のアイコンに知らせる */
+async function refreshBadge(): Promise<void> {
+  const attention = !!(await getLocal("lastError")) || Object.keys(await getConflicts()).length > 0;
+  await chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
+  await chrome.action.setBadgeText({ text: attention ? "!" : "" });
+}
+
 async function uploadEntry(wsId: string, entry: OutboxEntry): Promise<void> {
+  if (!sameEntry(await getOutboxEntry(wsId), entry)) return; // 取り込みで捨てられた、または新しい状態が積まれた
   const cached = (await getWorkspaces())[wsId];
   // 削除済み、または同期済みの状態に戻っていれば送らずに破棄
   if (!cached || !needsUpload(entry, cached)) {
     await removeOutboxIf(wsId, entry);
+    await clearConflict(wsId);
     return;
+  }
+  if ((await getConflicts())[wsId]) return; // ユーザーの選択を待つ
+  if (cached.fileId) {
+    // 上書きする前に、手元が知っている版から更新されていないか確かめる（新しければ取り込んで判定し直す）
+    const meta = await drive.getMeta(cached.fileId);
+    if (Date.parse(meta.modifiedTime) > Date.parse(cached.modifiedTime)) {
+      await applyRemote(await drive.download(cached.fileId), meta);
+      return uploadEntry(wsId, entry);
+    }
   }
   const doc: WorkspaceDoc = {
     ...cached.doc,
@@ -279,6 +303,10 @@ async function applyRemote(doc: WorkspaceDoc, file: drive.DriveFile): Promise<vo
     const cur = (await getWorkspaces())[doc.id];
     const pending = await getOutboxEntry(doc.id);
     if (pending && cur && !needsUpload(pending, cur)) await removeOutboxIf(doc.id, pending);
+    else if (cur && conflictsWithRemote(h, cur.syncedHash, pending)) {
+      await markConflict(doc.id);
+      await refreshBadge();
+    }
     await putWorkspace({ doc, fileId: file.id, modifiedTime: file.modifiedTime, syncedHash: h });
   };
 
@@ -293,7 +321,8 @@ async function applyRemote(doc: WorkspaceDoc, file: drive.DriveFile): Promise<vo
   // ガード中の撮影は捨てられて解除後に撮り直されるので、確認と適用の間に古い状態が積まれる入れ違いが起きない
   await withApplyGuardWhenIdle(winId, async () => {
     await store();
-    if (await getOutboxEntry(doc.id)) return false; // 未送信の手元の変更があれば、タブは手元を優先する
+    // 未送信の手元の変更や、確認待ちの競合があれば、タブは変えない
+    if ((await getOutboxEntry(doc.id)) || (await getConflicts())[doc.id]) return false;
     const aliases = await getAliases();
     if (hashOf(await capture(winId, aliases)) === h) return false;
     await applyToWindow(winId, doc, false, aliases, aliasRecorder(doc.id));
@@ -311,6 +340,8 @@ async function handleRemoteDelete(fileId: string): Promise<void> {
   await unmapWorkspace(hit.doc.id);
   await removeAliasesOfWorkspace(hit.doc.id);
   await deleteWorkspaceCache(hit.doc.id);
+  await clearConflict(hit.doc.id);
+  await refreshBadge();
   if (winId !== null && (await windowExists(winId))) await removeAnchors(winId);
 }
 
@@ -381,12 +412,11 @@ export async function syncAll(): Promise<void> {
     if (flushError !== undefined) await flushOutbox();
     await setLocal("lastSyncAt", Date.now());
     await setLocal("lastError", null);
-    await chrome.action.setBadgeText({ text: "" });
+    await refreshBadge();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await setLocal("lastError", msg);
-    await chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
-    await chrome.action.setBadgeText({ text: "!" });
+    await refreshBadge();
     throw e;
   }
 }
@@ -507,7 +537,41 @@ export async function deleteWorkspace(wsId: string): Promise<void> {
   await deleteWorkspaceCache(wsId);
   // 関連付けとキャッシュを外した後に消す（間に来たタブイベントで積み直されないように）
   await removeOutbox(wsId);
+  await clearConflict(wsId);
+  await refreshBadge();
   if (winId !== null && (await windowExists(winId))) await removeAnchors(winId);
+}
+
+/**
+ * 確認待ちの競合で、ユーザーが選んだ方を残す。
+ * remote は別の端末の内容にそろえ、local は手元の内容で上書きする（どちらも、もう一方の変更は失われる）
+ */
+export async function resolveConflict(wsId: string, keep: "remote" | "local"): Promise<void> {
+  await pull().catch((e) => console.warn("[conflict]", e)); // 最新を見てから決める（失敗しても手元のキャッシュで進める）
+  if (keep === "local") {
+    await clearConflict(wsId);
+    await refreshBadge();
+    await captureAndFlush(wsId);
+    return;
+  }
+  const winId = await windowOf(wsId);
+  const dropLocal = async () => {
+    await removeOutbox(wsId);
+    await clearConflict(wsId);
+  };
+  if (winId === null || !(await windowExists(winId))) await dropLocal();
+  else {
+    // 未送信を消す前にガードを立てる（消した後に古い状態を撮り直して積まないように）
+    await withApplyGuardWhenIdle(winId, async () => {
+      await dropLocal();
+      const ws = (await getWorkspaces())[wsId];
+      if (!ws) return false;
+      await applyToWindow(winId, ws.doc, false, await getAliases(), aliasRecorder(wsId));
+      await refreshAnchor(winId, wsId, ws.doc.name);
+      return true;
+    });
+  }
+  await refreshBadge();
 }
 
 // ---- 目印との突き合わせ ----
@@ -616,6 +680,14 @@ export async function closeIfOnlyAnchor(windowId: number): Promise<void> {
 export async function detachWindow(windowId: number): Promise<void> {
   const wsId = (await getWindowMap())[String(windowId)];
   await unmapWindow(windowId);
-  if (wsId) await removeAliasesOfWorkspace(wsId);
+  if (wsId) {
+    await removeAliasesOfWorkspace(wsId);
+    // 競合中の手元の内容はこのウィンドウのものなので、解除したらワークスペースへ送らない
+    if ((await getConflicts())[wsId]) {
+      await removeOutbox(wsId);
+      await clearConflict(wsId);
+      await refreshBadge();
+    }
+  }
   await removeAnchors(windowId);
 }

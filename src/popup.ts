@@ -62,6 +62,29 @@ async function act(fn: () => Promise<unknown>) {
   }
 }
 
+/** 別の端末でも更新されていたワークスペースについて、どちらを残すか選んでもらう */
+function conflictNotice(w: Item): HTMLElement {
+  const here = w.openWindowId !== null ? "この窓" : "この端末";
+  const choice = (keep: "remote" | "local", label: string, warning: string) => {
+    const b = el("button", { textContent: label, type: "button" });
+    b.onclick = () => {
+      if (confirm(warning)) void act(() => send({ type: "resolveConflict", wsId: w.id, keep }));
+    };
+    return b;
+  };
+  return el(
+    "div",
+    { className: "conflict" },
+    el("div", { textContent: `「${w.name}」は別の端末でも更新されています（最終: ${placeLabel(w)}）` }),
+    el(
+      "div",
+      { className: "row" },
+      choice("remote", "別の端末の内容にする", `「${w.name}」を別の端末の内容にします。\n${here}の変更は失われます。`),
+      choice("local", `${here}の内容で上書きする`, `「${w.name}」を${here}の内容で上書きします。\n別の端末の変更は失われます。`),
+    ),
+  );
+}
+
 type MenuItem = { label: string; danger?: boolean; fn: () => Promise<unknown> };
 
 /** 開いている「⋯」メニュー。同時に開くのは1つだけ */
@@ -167,6 +190,7 @@ async function render() {
     $("createRow").style.display = "";
   }
   if (s.lastError) notice.append(el("div", { className: "empty error", textContent: `同期エラー: ${s.lastError}` }));
+  for (const w of s.workspaces) if (w.conflict) notice.append(conflictNotice(w));
 
   const mine = s.workspaces.find((w) => w.openWindowId === currentWindowId);
   $("current").textContent = mine ? `このウィンドウ: ${mine.name}` : "このウィンドウはワークスペースではありません";

@@ -68,6 +68,7 @@ export type Request =
   | { type: "delete"; wsId: string }
   | { type: "detach"; windowId: number }
   | { type: "link"; windowId: number; wsId: string }
+  | { type: "resolveConflict"; wsId: string; keep: "remote" | "local" }
   | { type: "syncNow" };
 
 export interface StatusResponse {
@@ -86,6 +87,8 @@ export interface StatusResponse {
     browser: string | null;
     profileName: string | null;
     openWindowId: number | null;
+    /** 別の端末でも更新されていて、どちらを残すか確認待ち */
+    conflict: boolean;
   }[];
 }
 
