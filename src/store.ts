@@ -21,6 +21,8 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
 interface SessionSchema {
   /** このブラウザセッションで別名を整理済みか（済むまでは存在しないタブの別名を掃除しない） */
   aliasesReady: true;
+  /** ワークスペース → 目印のタブグループ ID。groupId はブラウザ再起動で変わるので session に置く */
+  anchorGroups: Record<string, number>;
 }
 
 interface LocalSchema {
@@ -266,12 +268,24 @@ export async function rotateAliasesOnStartup(): Promise<void> {
  * 起動直後、退避前に掃除が走って「再起動後に付け直すための別名」を消さないようにするため
  */
 export async function markAliasesReady(): Promise<void> {
-  await chrome.storage.session.set({ aliasesReady: true } satisfies SessionSchema);
+  await chrome.storage.session.set({ aliasesReady: true } satisfies Partial<SessionSchema>);
 }
 
 export async function aliasesReady(): Promise<boolean> {
   const r = await chrome.storage.session.get("aliasesReady");
   return r.aliasesReady === true;
+}
+
+export async function getAnchorGroups(): Promise<Record<string, number>> {
+  const r = await chrome.storage.session.get("anchorGroups");
+  return (r.anchorGroups as SessionSchema["anchorGroups"] | undefined) ?? {};
+}
+
+export async function setAnchorGroup(wsId: string, groupId: number): Promise<void> {
+  await serialize(async () => {
+    const anchorGroups = { ...(await getAnchorGroups()), [wsId]: groupId };
+    await chrome.storage.session.set({ anchorGroups } satisfies Partial<SessionSchema>);
+  });
 }
 
 export async function getStaleAliases(): Promise<TabAlias[]> {

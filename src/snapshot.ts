@@ -25,7 +25,7 @@ export function isSyncable(url: string): boolean {
   return (url.startsWith("https://") || url.startsWith("http://")) && anchorWsId(url) === null;
 }
 
-async function sortedTabs(windowId: number): Promise<chrome.tabs.Tab[]> {
+export async function sortedTabs(windowId: number): Promise<chrome.tabs.Tab[]> {
   const tabs = await chrome.tabs.query({ windowId });
   return tabs.sort((a, b) => a.index - b.index);
 }
